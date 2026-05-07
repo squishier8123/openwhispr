@@ -7,6 +7,25 @@ import { getSettings } from "../stores/settingsStore";
 import { getRecordingErrorTitle, getRecordingErrorDescription } from "../utils/recordingErrors";
 import { isAccessibilitySkipped } from "../utils/permissions";
 
+const STT_CONFIG_STARTUP_TIMEOUT_MS = 1500;
+
+async function getSttConfigWithTimeout() {
+  const configPromise = window.electronAPI.getSttConfig?.();
+  if (!configPromise) return null;
+
+  return await Promise.race([
+    configPromise,
+    new Promise((resolve) => setTimeout(() => resolve(null), STT_CONFIG_STARTUP_TIMEOUT_MS)),
+  ]);
+}
+
+function warmupMicrophoneOnce(audioManager) {
+  const globalState = window;
+  if (globalState.__openwhisprMicWarmupStarted) return;
+  globalState.__openwhisprMicWarmupStarted = true;
+  void audioManager.warmupMicrophoneDriver?.();
+}
+
 export const useAudioRecording = (toast, options = {}) => {
   const { t } = useTranslation();
   const [isRecording, setIsRecording] = useState(false);
@@ -20,20 +39,30 @@ export const useAudioRecording = (toast, options = {}) => {
   const { onToggle } = options;
 
   const performStartRecording = useCallback(async () => {
-    if (startLockRef.current) return false;
+    if (startLockRef.current) {
+      logger.info("Start recording ignored: start already in progress", {}, "audio");
+      return false;
+    }
     startLockRef.current = true;
     try {
-      if (!audioManagerRef.current) return false;
+      logger.info("Start recording requested", {}, "audio");
+      if (!audioManagerRef.current) {
+        logger.info("Start recording ignored: audio manager missing", {}, "audio");
+        return false;
+      }
 
       const currentState = audioManagerRef.current.getState();
+      logger.info("Start recording state check", currentState, "audio");
       if (currentState.isRecording || currentState.isProcessing) return false;
 
-      // Retry STT config fetch if it wasn't loaded on mount (e.g. auth wasn't ready)
-      if (!audioManagerRef.current.sttConfig) {
-        const config = await window.electronAPI.getSttConfig?.();
-        if (config?.success) {
-          audioManagerRef.current.setSttConfig(config);
-        }
+      // Retry STT config fetch if it wasn't loaded on mount, but keep cloud
+      // config/network checks out of the hotkey-to-mic activation path.
+      if (!getSettings().useLocalWhisper && !audioManagerRef.current.sttConfig) {
+        void getSttConfigWithTimeout().then((config) => {
+          if (config?.success) {
+            audioManagerRef.current?.setSttConfig(config);
+          }
+        });
       }
 
       const didStart = audioManagerRef.current.shouldUseStreaming()
@@ -55,12 +84,20 @@ export const useAudioRecording = (toast, options = {}) => {
   }, []);
 
   const performStopRecording = useCallback(async () => {
-    if (stopLockRef.current) return false;
+    if (stopLockRef.current) {
+      logger.info("Stop recording ignored: stop already in progress", {}, "audio");
+      return false;
+    }
     stopLockRef.current = true;
     try {
-      if (!audioManagerRef.current) return false;
+      logger.info("Stop recording requested", {}, "audio");
+      if (!audioManagerRef.current) {
+        logger.info("Stop recording ignored: audio manager missing", {}, "audio");
+        return false;
+      }
 
       const currentState = audioManagerRef.current.getState();
+      logger.info("Stop recording state check", currentState, "audio");
       if (!currentState.isRecording && !currentState.isStreamingStartInProgress) return false;
 
       window.electronAPI?.unregisterCancelHotkey?.();
@@ -70,7 +107,7 @@ export const useAudioRecording = (toast, options = {}) => {
         return await audioManagerRef.current.stopStreamingRecording();
       }
 
-      const didStop = audioManagerRef.current.stopRecording();
+      const didStop = await audioManagerRef.current.stopRecording();
 
       if (didStop) {
         void playStopCue();
@@ -198,10 +235,12 @@ export const useAudioRecording = (toast, options = {}) => {
         }
       }
     });
+    warmupMicrophoneOnce(audioManagerRef.current);
 
     const handleToggle = async () => {
       if (!audioManagerRef.current) return;
       const currentState = audioManagerRef.current.getState();
+      logger.info("Toggle dictation event received", currentState, "audio");
 
       if (!currentState.isRecording && !currentState.isProcessing) {
         await performStartRecording();
@@ -211,10 +250,12 @@ export const useAudioRecording = (toast, options = {}) => {
     };
 
     const handleStart = async () => {
+      logger.info("Start dictation event received", {}, "audio");
       await performStartRecording();
     };
 
     const handleStop = async () => {
+      logger.info("Stop dictation event received", {}, "audio");
       await performStopRecording();
     };
 
@@ -281,6 +322,7 @@ export const useAudioRecording = (toast, options = {}) => {
   };
 
   const toggleListening = async () => {
+    logger.info("Toggle listening invoked", { isRecording, isProcessing }, "audio");
     if (!isRecording && !isProcessing) {
       await performStartRecording();
     } else if (isRecording) {

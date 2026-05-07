@@ -30,6 +30,14 @@ export async function fetchProviders(): Promise<NoteRecordingProvider[] | null> 
   inFlight = (async () => {
     try {
       const data = await window.electronAPI.getNoteRecordingConfig!();
+      if (!data || data.code === "CLOUD_NOT_CONFIGURED") {
+        logger.debug(
+          "Skipping note recording provider fetch: cloud config unavailable",
+          {},
+          "streamingProviders"
+        );
+        return null;
+      }
       if (!data?.success) {
         throw new Error("Note recording config unavailable");
       }

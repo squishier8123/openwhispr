@@ -298,6 +298,8 @@ class IPCHandlers {
     this.audioTapManager = managers.audioTapManager;
     this.linuxPortalAudioManager = managers.linuxPortalAudioManager;
     this.meetingAecManager = managers.meetingAecManager;
+    this.getQdrantManager = managers.getQdrantManager;
+    this.getExistingQdrantManager = managers.getExistingQdrantManager;
     this.oauthProtocolRegistered = managers.oauthProtocolRegistered === true;
     this.oauthProtocol = managers.oauthProtocol || "openwhispr";
     this.sessionId = crypto.randomUUID();
@@ -317,6 +319,7 @@ class IPCHandlers {
     this.audioStorageManager = new AudioStorageManager();
     this._audioCleanupInterval = null;
     this._noteFilesEnabled = false;
+    this._localAiIdleTimers = new Map();
     this.speakerDiarizationEnabled = true;
     this.activeMeetingSpeakerConfig = null;
     liveSpeakerIdentifier.setDiarizationManager(this.diarizationManager);
@@ -348,6 +351,49 @@ class IPCHandlers {
       if (!vectorIndex.isReady()) return;
       vectorIndex.deleteNote(noteId).catch(() => {});
     });
+  }
+
+  _isLightModeEnabled() {
+    return process.env.LIGHT_MODE_ENABLED !== "false";
+  }
+
+  _clearLocalAiIdleTimer(service) {
+    const timer = this._localAiIdleTimers.get(service);
+    if (timer) clearTimeout(timer);
+    this._localAiIdleTimers.delete(service);
+  }
+
+  _scheduleLocalAiIdleStop(service) {
+    if (!this._isLightModeEnabled()) return;
+    this._clearLocalAiIdleTimer(service);
+    const timer = setTimeout(() => {
+      this._localAiIdleTimers.delete(service);
+      if (service === "whisper") {
+        this.whisperManager?.stopServer?.().catch(() => {});
+      } else if (service === "parakeet") {
+        this.parakeetManager?.stopServer?.().catch(() => {});
+      } else if (service === "llama") {
+        const modelManager = require("./modelManagerBridge").default;
+        modelManager.stopServer().catch(() => {});
+      }
+    }, 5 * 60 * 1000);
+    this._localAiIdleTimers.set(service, timer);
+  }
+
+  async _ensureQdrantReady() {
+    const qdrantManager = this.getQdrantManager?.();
+    if (!qdrantManager?.isAvailable()) return null;
+
+    if (!qdrantManager.isReady()) {
+      await qdrantManager.start();
+      if (qdrantManager.isReady()) {
+        const vectorIndex = require("./vectorIndex");
+        vectorIndex.init(qdrantManager.getPort());
+        await vectorIndex.ensureCollection();
+      }
+    }
+
+    return qdrantManager.isReady() ? qdrantManager : null;
   }
 
   _asyncMirrorWrite(note) {
@@ -920,6 +966,11 @@ class IPCHandlers {
 
     ipcMain.handle("db-semantic-search-notes", async (event, query, limit = 5) => {
       const vectorIndex = require("./vectorIndex");
+      try {
+        await this._ensureQdrantReady();
+      } catch (error) {
+        debugLogger.debug("Qdrant lazy startup failed; using FTS5 search", { error: error.message });
+      }
       if (!vectorIndex.isReady()) {
         return this.databaseManager.searchNotes(query, limit);
       }
@@ -965,6 +1016,11 @@ class IPCHandlers {
 
     ipcMain.handle("db-semantic-reindex-all", async () => {
       const vectorIndex = require("./vectorIndex");
+      try {
+        await this._ensureQdrantReady();
+      } catch (error) {
+        debugLogger.debug("Qdrant lazy startup failed before reindex", { error: error.message });
+      }
       if (!vectorIndex.isReady()) return { success: false, error: "Vector index not ready" };
 
       const notes = this.databaseManager.getNotes(null, 100000);
@@ -1400,12 +1456,17 @@ class IPCHandlers {
     ipcMain.handle("transcribe-audio-file", async (event, filePath, options = {}) => {
       const fs = require("fs");
       try {
-        const audioBuffer = fs.readFileSync(filePath);
         if (options.provider === "nvidia") {
-          const result = await this.parakeetManager.transcribeLocalParakeet(audioBuffer, options);
+          const result = await this.parakeetManager.transcribeLocalParakeetFile(
+            filePath,
+            options
+          );
+          this._scheduleLocalAiIdleStop("parakeet");
           return result;
         }
+        const audioBuffer = fs.readFileSync(filePath);
         const result = await this.whisperManager.transcribeLocalWhisper(audioBuffer, options);
+        this._scheduleLocalAiIdleStop("whisper");
         return result;
       } catch (error) {
         debugLogger.error("Audio file transcription error", { error: error.message });
@@ -1499,6 +1560,7 @@ class IPCHandlers {
           event.sender.send("no-audio-detected");
         }
 
+        this._scheduleLocalAiIdleStop("whisper");
         return result;
       } catch (error) {
         debugLogger.error("Local Whisper transcription error", error);
@@ -1608,12 +1670,14 @@ class IPCHandlers {
     });
 
     ipcMain.handle("whisper-server-start", async (event, modelName) => {
+      this._clearLocalAiIdleTimer("whisper");
       const useCuda =
         process.env.WHISPER_CUDA_ENABLED === "true" && this.whisperCudaManager?.isDownloaded();
       return this.whisperManager.startServer(modelName, { useCuda });
     });
 
     ipcMain.handle("whisper-server-stop", async () => {
+      this._clearLocalAiIdleTimer("whisper");
       return this.whisperManager.stopServer();
     });
 
@@ -1781,6 +1845,7 @@ class IPCHandlers {
           event.sender.send("no-audio-detected");
         }
 
+        this._scheduleLocalAiIdleStop("parakeet");
         return result;
       } catch (error) {
         debugLogger.error("Local Parakeet transcription error", error);
@@ -1862,6 +1927,7 @@ class IPCHandlers {
     });
 
     ipcMain.handle("parakeet-server-start", async (event, modelName) => {
+      this._clearLocalAiIdleTimer("parakeet");
       const result = await this.parakeetManager.startServer(modelName);
       process.env.LOCAL_TRANSCRIPTION_PROVIDER = "nvidia";
       process.env.PARAKEET_MODEL = modelName;
@@ -1870,6 +1936,7 @@ class IPCHandlers {
     });
 
     ipcMain.handle("parakeet-server-stop", async () => {
+      this._clearLocalAiIdleTimer("parakeet");
       const result = await this.parakeetManager.stopServer();
       delete process.env.LOCAL_TRANSCRIPTION_PROVIDER;
       delete process.env.PARAKEET_MODEL;
@@ -2704,6 +2771,8 @@ class IPCHandlers {
       const setVars = {};
       const clearVars = [];
 
+      setVars.LIGHT_MODE_ENABLED = prefs.lightModeEnabled === false ? "false" : "true";
+
       if (prefs.useLocalWhisper && prefs.model) {
         // Local mode with model selected - set provider and model for pre-warming
         setVars.LOCAL_TRANSCRIPTION_PROVIDER = prefs.localTranscriptionProvider;
@@ -2788,10 +2857,59 @@ class IPCHandlers {
       this._syncStartupEnv(setVars, clearVars);
     });
 
+    ipcMain.handle("local-ai-status", async () => {
+      const modelManager = require("./modelManagerBridge").default;
+      const qdrantManager = this.getExistingQdrantManager?.();
+      return {
+        lightModeEnabled: this._isLightModeEnabled(),
+        whisper: this.whisperManager.getServerStatus(),
+        parakeet: this.parakeetManager.getServerStatus(),
+        llama: modelManager.getServerStatus(),
+        qdrant: qdrantManager?.getStatus?.() ?? {
+          available: false,
+          running: false,
+          port: null,
+        },
+      };
+    });
+
+    ipcMain.handle("local-ai-stop-all", async () => {
+      const results = {};
+      for (const service of ["whisper", "parakeet", "llama"]) {
+        this._clearLocalAiIdleTimer(service);
+      }
+      try {
+        results.whisper = await this.whisperManager.stopServer();
+      } catch (error) {
+        results.whisper = { success: false, error: error.message };
+      }
+      try {
+        results.parakeet = await this.parakeetManager.stopServer();
+      } catch (error) {
+        results.parakeet = { success: false, error: error.message };
+      }
+      try {
+        const modelManager = require("./modelManagerBridge").default;
+        await modelManager.stopServer();
+        results.llama = { success: true };
+      } catch (error) {
+        results.llama = { success: false, error: error.message };
+      }
+      try {
+        const qdrantManager = this.getQdrantManager?.();
+        await qdrantManager?.stop?.();
+        results.qdrant = { success: true };
+      } catch (error) {
+        results.qdrant = { success: false, error: error.message };
+      }
+      return { success: true, results };
+    });
+
     ipcMain.handle("process-local-reasoning", async (event, text, modelId, _agentName, config) => {
       try {
         const LocalReasoningService = require("../services/localReasoningBridge").default;
         const result = await LocalReasoningService.processText(text, modelId, config);
+        this._scheduleLocalAiIdleStop("llama");
         return { success: true, text: result };
       } catch (error) {
         return { success: false, error: error.message };
@@ -2899,6 +3017,7 @@ class IPCHandlers {
 
     ipcMain.handle("llama-server-start", async (event, modelId) => {
       try {
+        this._clearLocalAiIdleTimer("llama");
         const modelManager = require("./modelManagerBridge").default;
         modelManager.ensureInitialized();
         const modelInfo = modelManager.findModelById(modelId);
@@ -2920,6 +3039,7 @@ class IPCHandlers {
 
     ipcMain.handle("llama-server-stop", async () => {
       try {
+        this._clearLocalAiIdleTimer("llama");
         const modelManager = require("./modelManagerBridge").default;
         await modelManager.stopServer();
         return { success: true };
@@ -3329,6 +3449,15 @@ class IPCHandlers {
       runtimeEnv.VITE_OPENWHISPR_API_URL ||
       "";
 
+    const isCloudApiNotConfigured = (error) =>
+      /OpenWhispr API URL not configured/i.test(error?.message || String(error || ""));
+
+    const cloudNotConfigured = (feature) => ({
+      success: false,
+      code: "CLOUD_NOT_CONFIGURED",
+      error: `${feature} unavailable: OpenWhispr API URL not configured`,
+    });
+
     const getAuthUrl = () =>
       process.env.AUTH_URL ||
       process.env.VITE_AUTH_URL ||
@@ -3533,7 +3662,7 @@ class IPCHandlers {
         if (settings?.useLocalWhisper) {
           if (settings.localTranscriptionProvider === "nvidia") {
             const model =
-              settings.parakeetModel || process.env.PARAKEET_MODEL || "parakeet-tdt-0.6b-v3";
+              settings.parakeetModel || process.env.PARAKEET_MODEL || "parakeet-unified-en-0.6b";
             result = await this.parakeetManager.transcribeLocalParakeet(buffer, { model });
           } else if (this.whisperManager?.serverManager?.isAvailable?.()) {
             result = await this.whisperManager.transcribeLocalWhisper(buffer, {
@@ -5636,6 +5765,10 @@ class IPCHandlers {
           matchType: data.matchType,
         };
       } catch (error) {
+        if (isCloudApiNotConfigured(error)) {
+          debugLogger.debug("Cloud reasoning skipped: API URL not configured", {}, "cloud-api");
+          return cloudNotConfigured("Cloud reasoning");
+        }
         debugLogger.error("Cloud reasoning error:", error);
         return { success: false, error: error.message };
       }
@@ -5822,6 +5955,14 @@ class IPCHandlers {
           const data = await response.json();
           return { success: true, ...data };
         } catch (error) {
+          if (isCloudApiNotConfigured(error)) {
+            debugLogger.debug(
+              "Cloud streaming usage skipped: API URL not configured",
+              {},
+              "cloud-api"
+            );
+            return cloudNotConfigured("Cloud streaming usage");
+          }
           debugLogger.error("Cloud streaming usage error", { error: error.message }, "cloud-api");
           return { success: false, error: error.message };
         }
@@ -5853,6 +5994,10 @@ class IPCHandlers {
         const data = await response.json();
         return { success: true, ...data };
       } catch (error) {
+        if (isCloudApiNotConfigured(error)) {
+          debugLogger.debug("Cloud usage skipped: API URL not configured", {}, "cloud-api");
+          return cloudNotConfigured("Cloud usage");
+        }
         debugLogger.error("Cloud usage fetch error:", error);
         return { success: false, error: error.message };
       }
@@ -6034,6 +6179,10 @@ class IPCHandlers {
         const data = await response.json();
         return { success: true, ...data };
       } catch (error) {
+        if (isCloudApiNotConfigured(error)) {
+          debugLogger.debug("STT config skipped: API URL not configured", {}, "cloud-api");
+          return null;
+        }
         debugLogger.error("STT config fetch error:", error);
         return null;
       }
@@ -6061,6 +6210,10 @@ class IPCHandlers {
         const data = await response.json();
         return { success: true, ...data };
       } catch (error) {
+        if (isCloudApiNotConfigured(error)) {
+          debugLogger.debug("Note recording config skipped: API URL not configured", {}, "cloud-api");
+          return null;
+        }
         debugLogger.error("Note recording config fetch error:", error);
         return null;
       }

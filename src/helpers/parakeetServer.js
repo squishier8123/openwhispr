@@ -55,9 +55,19 @@ class ParakeetServerManager {
     return true;
   }
 
-  async _ensureWav(audioBuffer) {
-    const isWav = isWavFormat(audioBuffer);
-    if (isWav) return { wavBuffer: audioBuffer, filesToCleanup: [] };
+  async _ensureWav(audioBuffer, options = {}) {
+    const { inputPath = null, tempInputExtension = ".webm" } = options;
+
+    if (audioBuffer && isWavFormat(audioBuffer)) {
+      return { wavBuffer: audioBuffer, filesToCleanup: [] };
+    }
+
+    if (inputPath) {
+      const fileBuffer = fs.readFileSync(inputPath);
+      if (isWavFormat(fileBuffer)) {
+        return { wavBuffer: fileBuffer, filesToCleanup: [] };
+      }
+    }
 
     const ffmpegPath = getFFmpegPath();
     if (!ffmpegPath) {
@@ -68,22 +78,51 @@ class ParakeetServerManager {
 
     const tempDir = getSafeTempDir();
     const timestamp = Date.now();
-    const tempInputPath = path.join(tempDir, `parakeet-input-${timestamp}.webm`);
+    const safeExtension = /^[.][a-z0-9]+$/i.test(tempInputExtension)
+      ? tempInputExtension
+      : ".webm";
+    const sourcePath =
+      inputPath || path.join(tempDir, `parakeet-input-${timestamp}${safeExtension}`);
     const tempWavPath = path.join(tempDir, `parakeet-${timestamp}.wav`);
+    const filesToCleanup = inputPath ? [tempWavPath] : [sourcePath, tempWavPath];
 
-    fs.writeFileSync(tempInputPath, audioBuffer);
+    if (!inputPath) {
+      fs.writeFileSync(sourcePath, audioBuffer);
+    }
 
-    const inputStats = fs.statSync(tempInputPath);
-    debugLogger.debug("Converting audio to WAV", { inputSize: inputStats.size });
+    const inputStats = fs.statSync(sourcePath);
+    if (inputStats.size === 0) {
+      throw new Error("Audio file is empty - no audio data received");
+    }
 
-    await convertToWav(tempInputPath, tempWavPath, { sampleRate: 16000, channels: 1 });
+    debugLogger.debug("Converting audio to WAV", {
+      input: path.basename(sourcePath),
+      inputSize: inputStats.size,
+      fromOriginalFile: !!inputPath,
+    });
+
+    try {
+      await convertToWav(sourcePath, tempWavPath, { sampleRate: 16000, channels: 1 });
+    } catch (error) {
+      throw this._formatConversionError(error);
+    }
 
     const wavBuffer = fs.readFileSync(tempWavPath);
-    return { wavBuffer, filesToCleanup: [tempInputPath, tempWavPath] };
+    return { wavBuffer, filesToCleanup };
+  }
+
+  _formatConversionError(error) {
+    const message = error?.message || "Unknown FFmpeg conversion error";
+    if (/End of file|Invalid data found|EBML|moov atom not found/i.test(message)) {
+      return new Error(
+        "Audio file could not be read. The file may still be recording, incomplete, or saved in an unsupported/corrupt format."
+      );
+    }
+    return error;
   }
 
   async transcribe(audioBuffer, options = {}) {
-    const { modelName = "parakeet-tdt-0.6b-v3", language = "auto" } = options;
+    const { modelName = "parakeet-unified-en-0.6b", language = "auto" } = options;
 
     const modelDir = path.join(this.getModelsDir(), modelName);
     if (!this.isModelDownloaded(modelName)) {
@@ -97,7 +136,41 @@ class ParakeetServerManager {
       isWavFormat: isWavFormat(audioBuffer),
     });
 
-    const { wavBuffer, filesToCleanup } = await this._ensureWav(audioBuffer);
+    const { wavBuffer, filesToCleanup } = await this._ensureWav(audioBuffer, {
+      tempInputExtension: options.tempInputExtension,
+    });
+    return this._transcribeWavBuffer(wavBuffer, filesToCleanup, { modelName, modelDir, language });
+  }
+
+  async transcribeFile(filePath, options = {}) {
+    const { modelName = "parakeet-unified-en-0.6b", language = "auto" } = options;
+
+    const modelDir = path.join(this.getModelsDir(), modelName);
+    if (!this.isModelDownloaded(modelName)) {
+      throw new Error(`Parakeet model "${modelName}" not downloaded`);
+    }
+    if (!filePath || !fs.existsSync(filePath)) {
+      throw new Error("Audio file not found");
+    }
+
+    const inputStats = fs.statSync(filePath);
+    if (inputStats.size === 0) {
+      throw new Error("Audio file is empty - no audio data received");
+    }
+
+    debugLogger.debug("Parakeet file transcription request", {
+      modelName,
+      language,
+      fileName: path.basename(filePath),
+      audioSize: inputStats.size,
+    });
+
+    const { wavBuffer, filesToCleanup } = await this._ensureWav(null, { inputPath: filePath });
+    return this._transcribeWavBuffer(wavBuffer, filesToCleanup, { modelName, modelDir, language });
+  }
+
+  async _transcribeWavBuffer(wavBuffer, filesToCleanup, options) {
+    const { modelName, modelDir, language } = options;
     try {
       if (!this.wsServer.ready || this.wsServer.modelName !== modelName) {
         await this.wsServer.start(modelName, modelDir);

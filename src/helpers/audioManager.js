@@ -10,6 +10,10 @@ import {
   getLocalSpeechGateDecision,
   recordLocalSpeechWindow,
 } from "./localSpeechGate";
+import {
+  getDictationAudioReadiness,
+  shouldFallbackFromParakeet,
+} from "./dictationReliability";
 import { getSettings, getEffectiveCleanupModel, isCloudCleanupMode } from "../stores/settingsStore";
 import { detectAgentName } from "../config/agentDetection";
 import { resolvePrompt } from "../config/prompts";
@@ -17,6 +21,7 @@ import { syncService } from "../services/SyncService.js";
 
 const REASONING_CACHE_TTL = 30000; // 30 seconds
 const REALTIME_MODELS = new Set(["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]);
+const STANDBY_MIC_TTL_MS = 90 * 1000;
 
 function resolveReasoningRoute(text, settings, agentName) {
   const cleanupReachable =
@@ -145,6 +150,10 @@ class AudioManager {
     this.skipReasoning = false;
     this.context = "dictation";
     this.sttConfig = null;
+    this.micDriverWarmedUp = false;
+    this.microphoneWarmupPromise = null;
+    this.standbyMicStream = null;
+    this.standbyMicStreamTimer = null;
     this.lastAudioBlob = null;
     this.lastAudioMetadata = null;
     this._localSpeechGateState = null;
@@ -297,6 +306,56 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     return { audio: noProcessing };
   }
 
+  async warmupMicrophoneDriver() {
+    if (this.micDriverWarmedUp) return true;
+    if (this.microphoneWarmupPromise) return this.microphoneWarmupPromise;
+    if (this.isRecording || this.isStreaming || this.streamingStartInProgress) return false;
+
+    this.microphoneWarmupPromise = (async () => {
+      const start = performance.now();
+      try {
+        await this.cacheMicrophoneDeviceId();
+        const constraints = await this.getAudioConstraints();
+        const tempStream = await navigator.mediaDevices.getUserMedia(constraints);
+        this.stopStandbyMicStream();
+        this.standbyMicStream = tempStream;
+        this.micDriverWarmedUp = true;
+        this.standbyMicStreamTimer = setTimeout(() => {
+          this.stopStandbyMicStream();
+        }, STANDBY_MIC_TTL_MS);
+        logger.info(
+          "Microphone driver warmed up",
+          { totalMs: Math.round(performance.now() - start), standbyStream: true },
+          "audio"
+        );
+        return true;
+      } catch (error) {
+        logger.debug(
+          "Microphone driver warmup skipped",
+          { error: error?.message || String(error) },
+          "audio"
+        );
+        return false;
+      } finally {
+        this.microphoneWarmupPromise = null;
+      }
+    })();
+
+    return this.microphoneWarmupPromise;
+  }
+
+  stopStandbyMicStream() {
+    if (this.standbyMicStreamTimer) {
+      clearTimeout(this.standbyMicStreamTimer);
+      this.standbyMicStreamTimer = null;
+    }
+    if (this.standbyMicStream) {
+      this.standbyMicStream.getTracks().forEach((track) => track.stop());
+      this.standbyMicStream = null;
+    }
+    this.micDriverWarmedUp = false;
+  }
+
   async cacheMicrophoneDeviceId() {
     if (this.cachedMicDeviceId) return; // Already cached
 
@@ -321,8 +380,21 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         return false;
       }
 
+      const t0 = performance.now();
       const constraints = await this.getAudioConstraints();
-      const micStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const tConstraints = performance.now();
+      let micStream = this.standbyMicStream;
+      const usedStandbyMicStream = !!micStream?.active;
+      if (usedStandbyMicStream) {
+        this.standbyMicStream = null;
+        if (this.standbyMicStreamTimer) {
+          clearTimeout(this.standbyMicStreamTimer);
+          this.standbyMicStreamTimer = null;
+        }
+      } else {
+        micStream = await navigator.mediaDevices.getUserMedia(constraints);
+      }
+      const tMedia = performance.now();
 
       const audioTrack = micStream.getAudioTracks()[0];
       if (audioTrack) {
@@ -371,7 +443,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       this.recordingMimeType = this.mediaRecorder.mimeType || "audio/webm";
 
       this.mediaRecorder.ondataavailable = (event) => {
-        this.audioChunks.push(event.data);
+        if (event.data && event.data.size > 0) {
+          this.audioChunks.push(event.data);
+        }
       };
 
       this.mediaRecorder.onstop = async () => {
@@ -409,11 +483,24 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         await this.processAudio(audioBlob, { durationSeconds });
 
         micStream.getTracks().forEach((track) => track.stop());
+        void this.warmupMicrophoneDriver();
       };
 
-      this.mediaRecorder.start();
+      this.mediaRecorder.start(250);
       this.isRecording = true;
       this.onStateChange?.({ isRecording: true, isProcessing: false });
+
+      logger.info(
+        "Recording start timing",
+        {
+          constraintsMs: Math.round(tConstraints - t0),
+          getUserMediaMs: Math.round(tMedia - tConstraints),
+          totalMs: Math.round(performance.now() - t0),
+          micDriverWarmedUp: !!this.micDriverWarmedUp,
+          usedStandbyMicStream,
+        },
+        "audio"
+      );
 
       const {
         showTranscriptionPreview,
@@ -471,8 +558,18 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     }
   }
 
-  stopRecording() {
+  async stopRecording() {
     if (this.mediaRecorder?.state === "recording") {
+      const elapsedMs = this.recordingStartTime ? Date.now() - this.recordingStartTime : 0;
+      if (elapsedMs < 750) {
+        await new Promise((resolve) => setTimeout(resolve, 750 - elapsedMs));
+      }
+      try {
+        this.mediaRecorder.requestData?.();
+      } catch {
+        // requestData is best-effort; stop still emits the final chunk.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 75));
       this.mediaRecorder.stop();
       return true;
     }
@@ -513,6 +610,24 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
   async processAudio(audioBlob, metadata = {}) {
     const pipelineStart = performance.now();
     const settings = getSettings();
+    const audioReadiness = getDictationAudioReadiness(audioBlob, metadata);
+    if (!audioReadiness.ready) {
+      logger.info(
+        "Dictation audio rejected before transcription",
+        {
+          reason: audioReadiness.reason,
+          size: audioReadiness.size,
+          durationMs: audioReadiness.durationMs,
+        },
+        "audio"
+      );
+      this._localSpeechGateState = null;
+      this.isProcessing = false;
+      this.onStateChange?.({ isRecording: false, isProcessing: false });
+      this.onTranscriptionComplete?.({ success: true, text: "" });
+      return;
+    }
+
     const speechGateDecision = getLocalSpeechGateDecision(this._localSpeechGateState);
     this._localSpeechGateState = null;
 
@@ -545,7 +660,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       const useLocalWhisper = settings.useLocalWhisper;
       const localProvider = settings.localTranscriptionProvider;
       const whisperModel = settings.whisperModel;
-      const parakeetModel = settings.parakeetModel || "parakeet-tdt-0.6b-v3";
+      const parakeetModel = settings.parakeetModel || "parakeet-unified-en-0.6b";
 
       const cloudTranscriptionMode = settings.cloudTranscriptionMode;
       const isSignedIn = settings.isSignedIn;
@@ -721,7 +836,35 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         throw error;
       }
 
-      const { allowOpenAIFallback, useLocalWhisper: isLocalMode } = getSettings();
+      const settings = getSettings();
+
+      if (shouldFallbackFromParakeet(settings, error)) {
+        const fallbackModel = settings.fallbackWhisperModel || settings.whisperModel || "base";
+        try {
+          logger.warn(
+            "Parakeet failed; falling back to local Whisper",
+            { error: error.message, fallbackModel },
+            "transcription"
+          );
+          const fallbackResult = await this.processWithLocalWhisper(
+            audioBlob,
+            fallbackModel,
+            metadata
+          );
+          return {
+            ...fallbackResult,
+            source: "local-whisper-fallback",
+            fallbackFrom: "local-parakeet",
+            fallbackReason: error.message,
+          };
+        } catch (fallbackError) {
+          throw new Error(
+            `Parakeet failed: ${error.message}. Local Whisper fallback also failed: ${fallbackError.message}`
+          );
+        }
+      }
+
+      const { allowOpenAIFallback, useLocalWhisper: isLocalMode } = settings;
 
       if (allowOpenAIFallback && isLocalMode) {
         try {
@@ -738,7 +881,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     }
   }
 
-  async processWithLocalParakeet(audioBlob, model = "parakeet-tdt-0.6b-v3", metadata = {}) {
+  async processWithLocalParakeet(audioBlob, model = "parakeet-unified-en-0.6b", metadata = {}) {
     const timings = {};
 
     try {
@@ -1099,6 +1242,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
         return result;
       } catch (error) {
+        if (error.code === "CLOUD_NOT_CONFIGURED") {
+          logger.debug(
+            "Cloud cleanup skipped: OpenWhispr API URL not configured",
+            { source },
+            "notes"
+          );
+          return normalizedText;
+        }
         logger.logReasoning("REASONING_FAILED", {
           error: error.message,
           stack: error.stack,
@@ -2772,6 +2923,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     if (this.mediaRecorder?.state === "recording") {
       this.stopRecording();
     }
+    this.stopStandbyMicStream();
     if (this.persistentAudioContext && this.persistentAudioContext.state !== "closed") {
       this.persistentAudioContext.close().catch(() => {});
       this.persistentAudioContext = null;

@@ -24,6 +24,7 @@ export interface TranscriptionSettings {
   customDictionary: string[];
   assemblyAiStreaming: boolean;
   showTranscriptionPreview: boolean;
+  lightModeEnabled: boolean;
 }
 
 export interface CleanupSettings {
@@ -145,6 +146,7 @@ function useSettingsInternal() {
     cleanupModel,
     dictationAgentProvider,
     dictationAgentModel,
+    lightModeEnabled,
   } = store;
 
   useEffect(() => {
@@ -160,6 +162,7 @@ function useSettingsInternal() {
         cleanupModel: cleanupProvider === "local" ? cleanupModel : undefined,
         dictationAgentProvider,
         dictationAgentModel: dictationAgentProvider === "local" ? dictationAgentModel : undefined,
+        lightModeEnabled,
       })
       .catch((err) =>
         logger.warn(
@@ -177,6 +180,7 @@ function useSettingsInternal() {
     cleanupModel,
     dictationAgentProvider,
     dictationAgentModel,
+    lightModeEnabled,
   ]);
 
   return {
@@ -273,7 +277,9 @@ function useSettingsInternal() {
     autoLearnCorrections,
     setAutoLearnCorrections,
     showTranscriptionPreview: store.showTranscriptionPreview,
+    lightModeEnabled: store.lightModeEnabled,
     setShowTranscriptionPreview: store.setShowTranscriptionPreview,
+    setLightModeEnabled: store.setLightModeEnabled,
     autoPasteEnabled: store.autoPasteEnabled,
     setAutoPasteEnabled: store.setAutoPasteEnabled,
     keepTranscriptionInClipboard: store.keepTranscriptionInClipboard,

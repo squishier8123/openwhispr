@@ -248,6 +248,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   parakeetServerStart: (modelName) => ipcRenderer.invoke("parakeet-server-start", modelName),
   parakeetServerStop: () => ipcRenderer.invoke("parakeet-server-stop"),
   parakeetServerStatus: () => ipcRenderer.invoke("parakeet-server-status"),
+  localAiStatus: () => ipcRenderer.invoke("local-ai-status"),
+  localAiStopAll: () => ipcRenderer.invoke("local-ai-stop-all"),
 
   // Diarization (speaker identification) functions
   downloadDiarizationModels: () => ipcRenderer.invoke("download-diarization-models"),

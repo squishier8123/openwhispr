@@ -116,7 +116,7 @@ const getMeetingTranscriptionOptions = () => {
       localProvider: resolved.localTranscriptionProvider,
       localModel:
         resolved.localTranscriptionProvider === "nvidia"
-          ? resolved.parakeetModel || "parakeet-tdt-0.6b-v3"
+          ? resolved.parakeetModel || "parakeet-unified-en-0.6b"
           : resolved.whisperModel || "base",
     };
   }

@@ -14,6 +14,9 @@ const ControlPanel = React.lazy(() => import("./components/ControlPanel.tsx"));
 const OnboardingFlow = React.lazy(() => import("./components/OnboardingFlow.tsx"));
 const AgentOverlay = React.lazy(() => import("./components/AgentOverlay.tsx"));
 
+const shouldBypassAuthOnboardingForLocalDev =
+  import.meta.env.DEV && import.meta.env.VITE_OPENWHISPR_BYPASS_AUTH_ONBOARDING === "true";
+
 export default function AppRouter() {
   useTheme();
   const params = window.location.search;
@@ -59,6 +62,18 @@ function MainApp() {
   }, [isAgentPanel, isControlPanel]);
 
   useEffect(() => {
+    if (shouldBypassAuthOnboardingForLocalDev) {
+      localStorage.setItem("authenticationSkipped", "true");
+      localStorage.setItem("skipAuth", "true");
+      localStorage.setItem("onboardingCompleted", "true");
+      localStorage.removeItem("onboardingCurrentStep");
+      window.electronAPI?.markBundleMigrated?.();
+      setShowOnboarding(false);
+      setNeedsReauth(false);
+      setIsLoading(false);
+      return;
+    }
+
     if (!authLoaded) return;
 
     const onboardingCompleted = localStorage.getItem("onboardingCompleted") === "true";

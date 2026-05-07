@@ -14,6 +14,7 @@ const ParakeetServerManager = require("./parakeetServer");
 const { getModelsDirForService } = require("./modelDirUtils");
 
 const modelRegistryData = require("../models/modelRegistryData.json");
+const DEFAULT_PARAKEET_MODEL = "parakeet-unified-en-0.6b";
 
 function getParakeetModelConfig(modelName) {
   const modelInfo = modelRegistryData.parakeetModels[modelName];
@@ -29,6 +30,12 @@ function getParakeetModelConfig(modelName) {
 
 function getValidModelNames() {
   return Object.keys(modelRegistryData.parakeetModels);
+}
+
+function getFallbackModelNames(requestedModel) {
+  return [requestedModel, DEFAULT_PARAKEET_MODEL, ...getValidModelNames()].filter(
+    (modelName, index, models) => modelName && models.indexOf(modelName) === index
+  );
 }
 
 class ParakeetManager {
@@ -179,6 +186,22 @@ class ParakeetManager {
     return this.serverManager.getServerStatus();
   }
 
+  resolveDownloadedModel(requestedModel) {
+    for (const modelName of getFallbackModelNames(requestedModel)) {
+      this.validateModelName(modelName);
+      if (this.serverManager.isModelDownloaded(modelName)) {
+        if (modelName !== requestedModel) {
+          debugLogger.warn("Using downloaded Parakeet model fallback", {
+            requestedModel,
+            resolvedModel: modelName,
+          });
+        }
+        return modelName;
+      }
+    }
+    return requestedModel;
+  }
+
   async transcribeLocalParakeet(audioBlob, options = {}) {
     debugLogger.logSTTPipeline("transcribeLocalParakeet - start", {
       options,
@@ -193,11 +216,12 @@ class ParakeetManager {
       );
     }
 
-    const model = options.model || "parakeet-tdt-0.6b-v3";
+    const requestedModel = options.model || DEFAULT_PARAKEET_MODEL;
+    const model = this.resolveDownloadedModel(requestedModel);
 
     if (!this.serverManager.isModelDownloaded(model)) {
       throw new Error(
-        `Parakeet model "${model}" not downloaded. Please download it from Settings.`
+        `Parakeet model "${requestedModel}" not downloaded. Please download it from Settings.`
       );
     }
 
@@ -231,6 +255,44 @@ class ParakeetManager {
     const elapsed = Date.now() - startTime;
 
     debugLogger.logSTTPipeline("transcribeLocalParakeet - completed", {
+      elapsed,
+      textLength: result.text?.length || 0,
+    });
+
+    return this.parseParakeetResult(result);
+  }
+
+  async transcribeLocalParakeetFile(filePath, options = {}) {
+    debugLogger.logSTTPipeline("transcribeLocalParakeetFile - start", {
+      options,
+      filePath,
+      serverAvailable: this.serverManager.isAvailable(),
+    });
+
+    if (!this.serverManager.isAvailable()) {
+      throw new Error(
+        "sherpa-onnx binary not found. Please ensure the app is installed correctly."
+      );
+    }
+
+    const requestedModel = options.model || DEFAULT_PARAKEET_MODEL;
+    const model = this.resolveDownloadedModel(requestedModel);
+
+    if (!this.serverManager.isModelDownloaded(model)) {
+      throw new Error(
+        `Parakeet model "${requestedModel}" not downloaded. Please download it from Settings.`
+      );
+    }
+
+    const startTime = Date.now();
+    const language = options.language || "auto";
+    const result = await this.serverManager.transcribeFile(filePath, {
+      modelName: model,
+      language,
+    });
+    const elapsed = Date.now() - startTime;
+
+    debugLogger.logSTTPipeline("transcribeLocalParakeetFile - completed", {
       elapsed,
       textLength: result.text?.length || 0,
     });

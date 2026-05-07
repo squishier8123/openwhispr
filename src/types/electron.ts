@@ -376,6 +376,7 @@ declare global {
 
       getNoteRecordingConfig?: () => Promise<{
         success: boolean;
+        code?: string;
         providers: Array<{
           id: string;
           name: string;
@@ -585,6 +586,7 @@ declare global {
         cleanupModel?: string;
         dictationAgentProvider: string;
         dictationAgentModel?: string;
+        lightModeEnabled?: boolean;
       }) => Promise<void>;
 
       // Clipboard operations
@@ -667,6 +669,14 @@ declare global {
         error?: string;
       }>;
       getParakeetDiagnostics: () => Promise<ParakeetDiagnosticsResult>;
+      localAiStatus?: () => Promise<{
+        lightModeEnabled: boolean;
+        whisper: { available: boolean; running: boolean; port?: number | null };
+        parakeet: { available: boolean; running: boolean; port?: number | null };
+        llama: LlamaServerStatus;
+        qdrant: { available: boolean; running: boolean; port: number | null };
+      }>;
+      localAiStopAll?: () => Promise<{ success: boolean; results?: Record<string, unknown> }>;
 
       // Local AI model management
       modelGetAll: () => Promise<any[]>;

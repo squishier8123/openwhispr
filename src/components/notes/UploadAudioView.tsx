@@ -140,7 +140,6 @@ export default function UploadAudioView({ onNoteCreated, onOpenSettings }: Uploa
   // Cloud pro: 500 MB max
   let fileTooLarge = false;
   let requiresUpgrade = false;
-  let requiresAccount = false;
   let byokTooLarge = false;
   let isLargeFile = false;
 
@@ -151,9 +150,6 @@ export default function UploadAudioView({ onNoteCreated, onOpenSettings }: Uploa
       // Custom endpoints (e.g. local whisper.cpp): no file size restrictions
     } else if (isByok) {
       byokTooLarge = file.sizeBytes > BYOK_MAX_FILE_SIZE;
-      if (byokTooLarge && !isSignedIn) {
-        requiresAccount = true;
-      }
     } else {
       // Cloud (OpenWhispr) — user is always signed in here
       fileTooLarge = file.sizeBytes > CLOUD_PRO_MAX_FILE_SIZE;
@@ -449,17 +445,11 @@ export default function UploadAudioView({ onNoteCreated, onOpenSettings }: Uploa
     }
   };
 
-  const handleCreateAccount = () => {
-    localStorage.setItem("pendingCloudMigration", "true");
-    localStorage.setItem("onboardingCurrentStep", "0");
-    localStorage.removeItem("onboardingCompleted");
-    window.location.reload();
-  };
-
-  const switchToCloud = () => {
-    setCloudTranscriptionMode("openwhispr");
-    setUseLocalWhisper(false);
-    updateTranscriptionSettings({ useLocalWhisper: false });
+  const switchToLocal = () => {
+    setUseLocalWhisper(true);
+    updateTranscriptionSettings({ useLocalWhisper: true });
+    setCloudTranscriptionMode("byok");
+    setAdvancedOpen(true);
   };
 
   const getTranscribingLabel = (): string => {
@@ -597,11 +587,8 @@ export default function UploadAudioView({ onNoteCreated, onOpenSettings }: Uploa
               isLargeFile={isLargeFile}
               isOpenWhisprCloud={isOpenWhisprCloud}
               byokTooLarge={byokTooLarge}
-              requiresAccount={requiresAccount}
-              isProUser={!!isProUser}
               onUpgrade={() => usage?.openCheckout()}
-              onCreateAccount={handleCreateAccount}
-              onSwitchToCloud={switchToCloud}
+              onSwitchToLocal={switchToLocal}
             />
           )}
 
@@ -859,11 +846,8 @@ interface SelectedViewProps {
   isLargeFile: boolean;
   isOpenWhisprCloud: boolean;
   byokTooLarge: boolean;
-  requiresAccount: boolean;
-  isProUser: boolean;
   onUpgrade: () => void;
-  onCreateAccount: () => void;
-  onSwitchToCloud: () => void;
+  onSwitchToLocal: () => void;
 }
 
 function SelectedView({
@@ -877,11 +861,8 @@ function SelectedView({
   isLargeFile,
   isOpenWhisprCloud,
   byokTooLarge,
-  requiresAccount,
-  isProUser,
   onUpgrade,
-  onCreateAccount,
-  onSwitchToCloud,
+  onSwitchToLocal,
 }: SelectedViewProps) {
   const canTranscribe = !fileTooLarge && !requiresUpgrade && !byokTooLarge;
 
@@ -925,11 +906,7 @@ function SelectedView({
             {t("notes.upload.byokTooLargeDetail")}
           </p>
           <p className="text-xs text-foreground/50 leading-relaxed mt-1.5 font-medium">
-            {requiresAccount
-              ? t("notes.upload.byokTooLargeNeedsAccount")
-              : isProUser
-                ? t("notes.upload.switchToCloudForLargeFiles")
-                : t("notes.upload.byokTooLargeNeedsUpgrade")}
+            Switch to local transcription for large files without using a paid plan.
           </p>
         </div>
       )}
@@ -951,34 +928,15 @@ function SelectedView({
       )}
 
       <div className="flex items-center gap-2 justify-center flex-wrap">
-        {/* BYOK too large — not signed in: Create Account */}
-        {byokTooLarge && requiresAccount && (
+        {/* BYOK too large — offer local processing instead of an account/paywall */}
+        {byokTooLarge && (
           <Button
             variant="default"
             size="sm"
-            onClick={onCreateAccount}
+            onClick={onSwitchToLocal}
             className="h-8 text-xs px-5"
           >
-            {t("notes.upload.createAccount")}
-          </Button>
-        )}
-
-        {/* BYOK too large — signed in, Pro: Switch to Cloud */}
-        {byokTooLarge && !requiresAccount && isProUser && (
-          <Button
-            variant="default"
-            size="sm"
-            onClick={onSwitchToCloud}
-            className="h-8 text-xs px-5"
-          >
-            {t("notes.upload.switchToCloud")}
-          </Button>
-        )}
-
-        {/* BYOK too large — signed in, Free: Upgrade */}
-        {byokTooLarge && !requiresAccount && !isProUser && (
-          <Button variant="default" size="sm" onClick={onUpgrade} className="h-8 text-xs px-5">
-            {t("notes.upload.upgrade")}
+            Switch to Local
           </Button>
         )}
 

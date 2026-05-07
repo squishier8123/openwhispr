@@ -43,6 +43,7 @@ const PERSISTED_KEYS = [
   "FLOATING_ICON_AUTO_HIDE",
   "PANEL_START_POSITION",
   "START_MINIMIZED",
+  "LIGHT_MODE_ENABLED",
   "UI_LANGUAGE",
   "WHISPER_CUDA_ENABLED",
   "TRANSCRIPTION_GPU_INDEX",
@@ -467,6 +468,16 @@ class EnvironmentManager {
 
   saveStartMinimized(enabled) {
     const result = this._saveKey("START_MINIMIZED", String(enabled));
+    this.saveAllKeysToEnvFile().catch(() => {});
+    return result;
+  }
+
+  getLightModeEnabled() {
+    return this._getKey("LIGHT_MODE_ENABLED") !== "false";
+  }
+
+  saveLightModeEnabled(enabled) {
+    const result = this._saveKey("LIGHT_MODE_ENABLED", String(enabled));
     this.saveAllKeysToEnvFile().catch(() => {});
     return result;
   }

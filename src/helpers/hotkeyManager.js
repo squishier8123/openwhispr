@@ -374,6 +374,15 @@ class HotkeyManager {
         return { success: true, hotkey };
       }
 
+      if (process.platform === "win32" && slotName === "dictation") {
+        slot.hotkey = hotkey;
+        slot.accelerator = null;
+        debugLogger.log(
+          `[HotkeyManager] Windows dictation hotkey "${hotkey}" set - using native listener`
+        );
+        return { success: true, hotkey };
+      }
+
       const accelerator = normalizeToAccelerator(hotkey);
 
       const alreadyRegistered = globalShortcut.isRegistered(accelerator);

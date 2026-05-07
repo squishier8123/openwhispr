@@ -435,10 +435,12 @@ class WindowManager {
 
   sendToggleDictation() {
     if (this.hotkeyManager.isInListeningMode()) {
+      debugLogger.info("Toggle dictation ignored: hotkey capture is active", {}, "hotkey");
       return;
     }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.showDictationPanel();
+      debugLogger.info("Sending toggle-dictation to renderer", {}, "hotkey");
       this.mainWindow.webContents.send("toggle-dictation");
       this._isDictatingToggle = !this._isDictatingToggle;
       this.meetingDetectionEngine?.setUserRecording(this._isDictatingToggle);
@@ -447,10 +449,12 @@ class WindowManager {
 
   sendStartDictation() {
     if (this.hotkeyManager.isInListeningMode()) {
+      debugLogger.info("Start dictation ignored: hotkey capture is active", {}, "hotkey");
       return;
     }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.showDictationPanel();
+      debugLogger.info("Sending start-dictation to renderer", {}, "hotkey");
       this.mainWindow.webContents.send("start-dictation");
       this.meetingDetectionEngine?.setUserRecording(true);
     }
@@ -458,9 +462,11 @@ class WindowManager {
 
   sendStopDictation() {
     if (this.hotkeyManager.isInListeningMode()) {
+      debugLogger.info("Stop dictation ignored: hotkey capture is active", {}, "hotkey");
       return;
     }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      debugLogger.info("Sending stop-dictation to renderer", {}, "hotkey");
       this.mainWindow.webContents.send("stop-dictation");
       this._isDictatingToggle = false;
       this.meetingDetectionEngine?.setUserRecording(false);

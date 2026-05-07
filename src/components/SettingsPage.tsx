@@ -668,6 +668,8 @@ export default function SettingsPage({
     setFloatingIconAutoHide,
     startMinimized,
     setStartMinimized,
+    lightModeEnabled,
+    setLightModeEnabled,
     panelStartPosition,
     setPanelStartPosition,
     cloudBackupEnabled,
@@ -696,6 +698,14 @@ export default function SettingsPage({
 
   const [currentVersion, setCurrentVersion] = useState<string>("");
   const [isRemovingModels, setIsRemovingModels] = useState(false);
+  const [localAiStatus, setLocalAiStatus] = useState<{
+    whisper?: { running?: boolean };
+    parakeet?: { running?: boolean };
+    llama?: { running?: boolean };
+    qdrant?: { running?: boolean };
+  } | null>(null);
+  const [localAiStatusLoading, setLocalAiStatusLoading] = useState(false);
+  const [localAiStopping, setLocalAiStopping] = useState(false);
   const cachePathHint =
     typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent)
       ? "%USERPROFILE%\\.cache\\openwhispr"
@@ -718,6 +728,45 @@ export default function SettingsPage({
 
   const isUpdateAvailable =
     !updateStatus.isDevelopment && (updateStatus.updateAvailable || updateStatus.updateDownloaded);
+
+  const refreshLocalAiStatus = useCallback(async () => {
+    if (!window.electronAPI?.localAiStatus) return;
+    setLocalAiStatusLoading(true);
+    try {
+      setLocalAiStatus(await window.electronAPI.localAiStatus());
+    } catch (error) {
+      logger.warn("Failed to load local AI status", { error }, "settings");
+    } finally {
+      setLocalAiStatusLoading(false);
+    }
+  }, []);
+
+  const stopLocalAi = useCallback(async () => {
+    if (!window.electronAPI?.localAiStopAll) return;
+    setLocalAiStopping(true);
+    try {
+      await window.electronAPI.localAiStopAll();
+      await refreshLocalAiStatus();
+      toast({
+        title: "Local AI stopped",
+        description: "Background local model services have been stopped.",
+        variant: "success",
+      });
+    } catch (error) {
+      logger.warn("Failed to stop local AI", { error }, "settings");
+      toast({
+        title: "Could not stop local AI",
+        description: "One or more background services could not be stopped.",
+        variant: "destructive",
+      });
+    } finally {
+      setLocalAiStopping(false);
+    }
+  }, [refreshLocalAiStatus, toast]);
+
+  useEffect(() => {
+    if (activeSection === "system") refreshLocalAiStatus();
+  }, [activeSection, refreshLocalAiStatus]);
 
   const migration = useMigration();
 
@@ -3501,6 +3550,77 @@ EOF`,
                       />
                     </div>
                   )}
+                </SettingsPanelRow>
+              </SettingsPanel>
+            </div>
+
+            {/* Local AI */}
+            <div className="border-t border-border/40 pt-6">
+              <SectionHeader
+                title="Local AI"
+                description="Keep startup fast and stop background local model services when you are not using them."
+              />
+              <SettingsPanel>
+                <SettingsPanelRow>
+                  <SettingsRow
+                    label="Light Mode"
+                    description="Start heavy local AI services only when a feature actually needs them."
+                  >
+                    <Toggle checked={lightModeEnabled} onChange={setLightModeEnabled} />
+                  </SettingsRow>
+                </SettingsPanelRow>
+                <SettingsPanelRow>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {([
+                        ["Whisper", localAiStatus?.whisper?.running],
+                        ["Parakeet", localAiStatus?.parakeet?.running],
+                        ["Llama", localAiStatus?.llama?.running],
+                        ["Qdrant", localAiStatus?.qdrant?.running],
+                      ] as Array<[string, boolean | undefined]>).map(([label, running]) => (
+                        <div
+                          key={label}
+                          className="rounded-md border border-border/40 px-2.5 py-2"
+                        >
+                          <p className="text-xs font-medium text-foreground">{label}</p>
+                          <p
+                            className={`mt-0.5 text-xs ${
+                              running ? "text-success" : "text-muted-foreground"
+                            }`}
+                          >
+                            {running ? "Running" : "Stopped"}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={refreshLocalAiStatus}
+                        disabled={localAiStatusLoading || localAiStopping}
+                      >
+                        <RefreshCw
+                          size={13}
+                          className={`mr-1.5 ${localAiStatusLoading ? "animate-spin" : ""}`}
+                        />
+                        Refresh Status
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={stopLocalAi}
+                        disabled={localAiStopping}
+                      >
+                        {localAiStopping ? (
+                          <Loader2 size={13} className="mr-1.5 animate-spin" />
+                        ) : (
+                          <Cpu size={13} className="mr-1.5" />
+                        )}
+                        Stop Local AI
+                      </Button>
+                    </div>
+                  </div>
                 </SettingsPanelRow>
               </SettingsPanel>
             </div>

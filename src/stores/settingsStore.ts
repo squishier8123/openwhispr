@@ -28,6 +28,8 @@ import type {
 let _ReasoningService: typeof import("../services/ReasoningService").default | null = null;
 
 const isBrowser = typeof window !== "undefined";
+const forceLocalParakeetForDev =
+  import.meta.env.DEV && import.meta.env.VITE_OPENWHISPR_BYPASS_AUTH_ONBOARDING === "true";
 
 function readString(key: string, fallback: string): string {
   if (!isBrowser) return fallback;
@@ -321,6 +323,7 @@ export interface SettingsState
   pauseMediaOnDictation: boolean;
   floatingIconAutoHide: boolean;
   startMinimized: boolean;
+  lightModeEnabled: boolean;
   gcalAccounts: GoogleCalendarAccount[];
   gcalConnected: boolean;
   gcalEmail: string;
@@ -492,6 +495,7 @@ export interface SettingsState
   setPauseMediaOnDictation: (value: boolean) => void;
   setFloatingIconAutoHide: (enabled: boolean) => void;
   setStartMinimized: (enabled: boolean) => void;
+  setLightModeEnabled: (enabled: boolean) => void;
   setGcalAccounts: (accounts: GoogleCalendarAccount[]) => void;
   setMeetingProcessDetection: (value: boolean) => void;
   setMeetingAudioDetection: (value: boolean) => void;
@@ -622,14 +626,18 @@ function invalidateApiKeyCaches(
 
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   uiLanguage: normalizeUiLanguage(isBrowser ? localStorage.getItem("uiLanguage") : null),
-  useLocalWhisper: readBoolean("useLocalWhisper", false),
+  useLocalWhisper: forceLocalParakeetForDev || readBoolean("useLocalWhisper", false),
   whisperModel: readString("whisperModel", "base"),
-  localTranscriptionProvider: (readString("localTranscriptionProvider", "whisper") === "nvidia"
+  localTranscriptionProvider: (forceLocalParakeetForDev
     ? "nvidia"
-    : "whisper") as LocalTranscriptionProvider,
-  parakeetModel: readString("parakeetModel", ""),
+    : readString("localTranscriptionProvider", "whisper") === "nvidia"
+      ? "nvidia"
+      : "whisper") as LocalTranscriptionProvider,
+  parakeetModel: forceLocalParakeetForDev
+    ? "parakeet-unified-en-0.6b"
+    : readString("parakeetModel", ""),
   allowOpenAIFallback: readBoolean("allowOpenAIFallback", false),
-  allowLocalFallback: readBoolean("allowLocalFallback", false),
+  allowLocalFallback: readBoolean("allowLocalFallback", true),
   fallbackWhisperModel: readString("fallbackWhisperModel", "base"),
   preferredLanguage: readString("preferredLanguage", "auto"),
   cloudTranscriptionProvider: readString("cloudTranscriptionProvider", "openai"),
@@ -707,6 +715,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   pauseMediaOnDictation: readBoolean("pauseMediaOnDictation", false),
   floatingIconAutoHide: readBoolean("floatingIconAutoHide", false),
   startMinimized: readBoolean("startMinimized", false),
+  lightModeEnabled: readBoolean("lightModeEnabled", true),
   ...(() => {
     let accounts: GoogleCalendarAccount[] = [];
     try {
@@ -737,6 +746,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   isSignedIn: readBoolean("isSignedIn", false),
 
   transcriptionMode: (() => {
+    if (forceLocalParakeetForDev) return "local" as InferenceMode;
     const v = readString("transcriptionMode", "openwhispr");
     if (v === "openwhispr" || v === "providers" || v === "local" || v === "self-hosted") return v;
     return "openwhispr" as InferenceMode;
@@ -1139,6 +1149,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       window.electronAPI?.notifyStartMinimizedChanged?.(enabled);
     }
   },
+
+  setLightModeEnabled: createBooleanSetter("lightModeEnabled"),
 
   setGcalAccounts: (accounts: GoogleCalendarAccount[]) => {
     if (isBrowser) localStorage.setItem("gcalAccounts", JSON.stringify(accounts));

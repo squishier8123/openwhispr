@@ -294,6 +294,23 @@ let cliBridge = null;
 let globeKeyAlertShown = false;
 let authBridgeServer = null;
 
+function isLightModeEnabled() {
+  return process.env.LIGHT_MODE_ENABLED !== "false";
+}
+
+function getOrCreateQdrantManager() {
+  if (!qdrantManager) {
+    const QdrantManager = require("./src/helpers/qdrantManager");
+    qdrantManager = new QdrantManager();
+    sidecarRegistry.register("qdrant", () => qdrantManager.stop());
+  }
+  return qdrantManager;
+}
+
+function getExistingQdrantManager() {
+  return qdrantManager;
+}
+
 function parseAuthBridgePort() {
   const raw = (process.env.OPENWHISPR_AUTH_BRIDGE_PORT || "").trim();
   if (!raw) return DEFAULT_AUTH_BRIDGE_PORT;
@@ -393,6 +410,8 @@ function initializeCoreManagers() {
     linuxPortalAudioManager,
     meetingAecManager,
     getTrayManager: () => trayManager,
+    getQdrantManager: getOrCreateQdrantManager,
+    getExistingQdrantManager,
     oauthProtocolRegistered: protocolRegistered,
     oauthProtocol: OAUTH_PROTOCOL,
   });
@@ -841,48 +860,53 @@ async function startApp() {
   });
 
   // Non-blocking server pre-warming
-  const whisperSettings = {
-    localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
-    whisperModel: process.env.LOCAL_WHISPER_MODEL,
-    useCuda: process.env.WHISPER_CUDA_ENABLED === "true" && whisperCudaManager?.isDownloaded(),
-  };
-  whisperManager.initializeAtStartup(whisperSettings).catch((err) => {
-    debugLogger.debug("Whisper startup init error (non-fatal)", { error: err.message });
-  });
-
-  const parakeetSettings = {
-    localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
-    parakeetModel: process.env.PARAKEET_MODEL,
-  };
-  parakeetManager.initializeAtStartup(parakeetSettings).catch((err) => {
-    debugLogger.debug("Parakeet startup init error (non-fatal)", { error: err.message });
-  });
-
-  // TODO: drop legacy REASONING_PROVIDER / LOCAL_REASONING_MODEL fallbacks after 2 releases.
-  const cleanupProvider = process.env.CLEANUP_PROVIDER || process.env.REASONING_PROVIDER;
-  const cleanupLocalModel = process.env.LOCAL_CLEANUP_MODEL || process.env.LOCAL_REASONING_MODEL;
-  if (cleanupProvider === "local" && cleanupLocalModel) {
-    const modelManager = require("./src/helpers/modelManagerBridge").default;
-    modelManager.prewarmServer(cleanupLocalModel).catch((err) => {
-      debugLogger.debug("llama-server pre-warm error (non-fatal)", { error: err.message });
+  if (!isLightModeEnabled()) {
+    const whisperSettings = {
+      localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
+      whisperModel: process.env.LOCAL_WHISPER_MODEL,
+      useCuda: process.env.WHISPER_CUDA_ENABLED === "true" && whisperCudaManager?.isDownloaded(),
+    };
+    whisperManager.initializeAtStartup(whisperSettings).catch((err) => {
+      debugLogger.debug("Whisper startup init error (non-fatal)", { error: err.message });
     });
-  }
 
-  if (
-    process.env.DICTATION_AGENT_PROVIDER === "local" &&
-    process.env.LOCAL_DICTATION_AGENT_MODEL &&
-    process.env.LOCAL_DICTATION_AGENT_MODEL !== cleanupLocalModel
-  ) {
-    const modelManager = require("./src/helpers/modelManagerBridge").default;
-    modelManager.prewarmServer(process.env.LOCAL_DICTATION_AGENT_MODEL).catch((err) => {
-      debugLogger.debug("dictation-agent llama-server pre-warm error (non-fatal)", {
-        error: err.message,
+    const parakeetSettings = {
+      localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
+      parakeetModel: process.env.PARAKEET_MODEL,
+    };
+    parakeetManager.initializeAtStartup(parakeetSettings).catch((err) => {
+      debugLogger.debug("Parakeet startup init error (non-fatal)", { error: err.message });
+    });
+
+    // TODO: drop legacy REASONING_PROVIDER / LOCAL_REASONING_MODEL fallbacks after 2 releases.
+    const cleanupProvider = process.env.CLEANUP_PROVIDER || process.env.REASONING_PROVIDER;
+    const cleanupLocalModel = process.env.LOCAL_CLEANUP_MODEL || process.env.LOCAL_REASONING_MODEL;
+    if (cleanupProvider === "local" && cleanupLocalModel) {
+      const modelManager = require("./src/helpers/modelManagerBridge").default;
+      modelManager.prewarmServer(cleanupLocalModel).catch((err) => {
+        debugLogger.debug("llama-server pre-warm error (non-fatal)", { error: err.message });
       });
-    });
+    }
+
+    if (
+      process.env.DICTATION_AGENT_PROVIDER === "local" &&
+      process.env.LOCAL_DICTATION_AGENT_MODEL &&
+      process.env.LOCAL_DICTATION_AGENT_MODEL !== cleanupLocalModel
+    ) {
+      const modelManager = require("./src/helpers/modelManagerBridge").default;
+      modelManager.prewarmServer(process.env.LOCAL_DICTATION_AGENT_MODEL).catch((err) => {
+        debugLogger.debug("dictation-agent llama-server pre-warm error (non-fatal)", {
+          error: err.message,
+        });
+      });
+    }
+  } else {
+    debugLogger.info("Light Mode enabled; skipping local AI startup pre-warm");
   }
 
   // Auto-download diarization models if binary is available
   if (
+    !isLightModeEnabled() &&
     diarizationManager.getBinaryPath() &&
     (!diarizationManager.isModelDownloaded() || !diarizationManager.isVadModelDownloaded())
   ) {
@@ -893,16 +917,15 @@ async function startApp() {
     });
   }
 
-  const QdrantManager = require("./src/helpers/qdrantManager");
-  qdrantManager = new QdrantManager();
-  sidecarRegistry.register("qdrant", () => qdrantManager.stop());
-  if (qdrantManager.isAvailable()) {
-    qdrantManager
+  if (!isLightModeEnabled()) {
+    const manager = getOrCreateQdrantManager();
+    if (manager.isAvailable()) {
+      manager
       .start()
       .then(() => {
-        if (qdrantManager.isReady()) {
+        if (manager.isReady()) {
           const vectorIndex = require("./src/helpers/vectorIndex");
-          vectorIndex.init(qdrantManager.getPort());
+          vectorIndex.init(manager.getPort());
           vectorIndex.ensureCollection().catch((err) => {
             debugLogger.debug("Qdrant collection setup error (non-fatal)", { error: err.message });
           });
@@ -911,10 +934,11 @@ async function startApp() {
       .catch((err) => {
         debugLogger.debug("Qdrant startup error (non-fatal)", { error: err.message });
       });
+    }
   }
 
   const localEmbeddings = require("./src/helpers/localEmbeddings");
-  if (!localEmbeddings.isAvailable()) {
+  if (!isLightModeEnabled() && !localEmbeddings.isAvailable()) {
     localEmbeddings.downloadModel().catch((err) => {
       debugLogger.debug("Embedding model download error (non-fatal)", { error: err.message });
     });
@@ -1145,6 +1169,7 @@ async function startApp() {
 
     const needsNativeListener = (hotkey, mode) => {
       if (!isValidHotkey(hotkey)) return false;
+      if (process.platform === "win32") return true;
       if (mode === "push") return true;
       return isRightSideMod(hotkey) || isModifierOnlyHotkey(hotkey);
     };

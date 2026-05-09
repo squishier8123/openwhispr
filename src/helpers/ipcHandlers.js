@@ -37,6 +37,9 @@ const {
 const {
   shouldUseWindowsNativeListener,
 } = require("./windowsHotkeyListenerPolicy");
+const { createLocalAiActivityTracker } = require("./localAiActivityTracker");
+const { formatSidecarFailure, isRetryableSidecarReset } = require("./localSidecarRecovery");
+const { resolveStartupTranscriptionPrefs } = require("./startupTranscriptionPrefs");
 
 const STREAMING_CLIENT_BY_PROVIDER = {
   "openai-realtime": OpenAIRealtimeStreaming,
@@ -323,6 +326,7 @@ class IPCHandlers {
     this._audioCleanupInterval = null;
     this._noteFilesEnabled = false;
     this._localAiIdleTimers = new Map();
+    this._localAiActivityTracker = createLocalAiActivityTracker();
     this.speakerDiarizationEnabled = true;
     this.activeMeetingSpeakerConfig = null;
     liveSpeakerIdentifier.setDiarizationManager(this.diarizationManager);
@@ -361,26 +365,30 @@ class IPCHandlers {
   }
 
   _clearLocalAiIdleTimer(service) {
-    const timer = this._localAiIdleTimers.get(service);
-    if (timer) clearTimeout(timer);
-    this._localAiIdleTimers.delete(service);
+    this._localAiActivityTracker.clear(service);
   }
 
   _scheduleLocalAiIdleStop(service) {
     if (!this._isLightModeEnabled()) return;
-    this._clearLocalAiIdleTimer(service);
-    const timer = setTimeout(() => {
-      this._localAiIdleTimers.delete(service);
+    this._localAiActivityTracker.scheduleIdleStop(service, async () => {
       if (service === "whisper") {
-        this.whisperManager?.stopServer?.().catch(() => {});
+        await this.whisperManager?.stopServer?.();
       } else if (service === "parakeet") {
-        this.parakeetManager?.stopServer?.().catch(() => {});
+        await this.parakeetManager?.stopServer?.();
       } else if (service === "llama") {
         const modelManager = require("./modelManagerBridge").default;
-        modelManager.stopServer().catch(() => {});
+        await modelManager.stopServer();
       }
-    }, 5 * 60 * 1000);
-    this._localAiIdleTimers.set(service, timer);
+    });
+  }
+
+  async _withLocalAiActivity(service, work) {
+    this._localAiActivityTracker.start(service);
+    try {
+      return await work();
+    } finally {
+      await this._localAiActivityTracker.finish(service);
+    }
   }
 
   async _ensureQdrantReady() {
@@ -1460,15 +1468,16 @@ class IPCHandlers {
       const fs = require("fs");
       try {
         if (options.provider === "nvidia") {
-          const result = await this.parakeetManager.transcribeLocalParakeetFile(
-            filePath,
-            options
+          const result = await this._withLocalAiActivity("parakeet", () =>
+            this.parakeetManager.transcribeLocalParakeetFile(filePath, options)
           );
           this._scheduleLocalAiIdleStop("parakeet");
           return result;
         }
         const audioBuffer = fs.readFileSync(filePath);
-        const result = await this.whisperManager.transcribeLocalWhisper(audioBuffer, options);
+        const result = await this._withLocalAiActivity("whisper", () =>
+          this.whisperManager.transcribeLocalWhisper(audioBuffer, options)
+        );
         this._scheduleLocalAiIdleStop("whisper");
         return result;
       } catch (error) {
@@ -1548,7 +1557,9 @@ class IPCHandlers {
       });
 
       try {
-        const result = await this.whisperManager.transcribeLocalWhisper(audioBlob, options);
+        const result = await this._withLocalAiActivity("whisper", () =>
+          this.whisperManager.transcribeLocalWhisper(audioBlob, options)
+        );
 
         debugLogger.log("Whisper result", {
           success: result.success,
@@ -1613,6 +1624,9 @@ class IPCHandlers {
             error: "model_not_found",
             message: errorMessage,
           };
+        }
+        if (isRetryableSidecarReset(error)) {
+          return formatSidecarFailure("Whisper", error);
         }
 
         throw error;
@@ -1834,7 +1848,9 @@ class IPCHandlers {
       });
 
       try {
-        const result = await this.parakeetManager.transcribeLocalParakeet(audioBlob, options);
+        const result = await this._withLocalAiActivity("parakeet", () =>
+          this.parakeetManager.transcribeLocalParakeet(audioBlob, options)
+        );
 
         debugLogger.log("Parakeet result", {
           success: result.success,
@@ -1867,6 +1883,9 @@ class IPCHandlers {
             error: "model_not_found",
             message: errorMessage,
           };
+        }
+        if (isRetryableSidecarReset(error)) {
+          return formatSidecarFailure("Parakeet", error);
         }
 
         throw error;
@@ -2766,6 +2785,10 @@ class IPCHandlers {
 
     ipcMain.handle("save-all-keys-to-env", async () => {
       return this.environmentManager.saveAllKeysToEnvFile();
+    });
+
+    ipcMain.handle("get-startup-transcription-preferences", async () => {
+      return resolveStartupTranscriptionPrefs(process.env);
     });
 
     ipcMain.handle("sync-startup-preferences", async (event, prefs) => {

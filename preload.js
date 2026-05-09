@@ -405,6 +405,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveActivationMode: (mode) => ipcRenderer.invoke("save-activation-mode", mode),
 
   saveAllKeysToEnv: () => ipcRenderer.invoke("save-all-keys-to-env"),
+  getStartupTranscriptionPreferences: () =>
+    ipcRenderer.invoke("get-startup-transcription-preferences"),
   syncStartupPreferences: (prefs) => ipcRenderer.invoke("sync-startup-preferences", prefs),
 
   // Local reasoning

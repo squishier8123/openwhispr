@@ -6,6 +6,7 @@ const path = require("path");
 
 const rootDir = path.resolve(__dirname, "..");
 const modelRegistry = require("../src/models/modelRegistryData.json");
+const { buildModeReport } = require("../src/helpers/dictationDoctorProfiles");
 
 function exists(filePath) {
   return !!filePath && fs.existsSync(filePath);
@@ -21,18 +22,6 @@ function readText(filePath) {
   } catch {
     return "";
   }
-}
-
-function parseEnvFile(filePath) {
-  const values = {};
-  for (const line of readText(filePath).split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    values[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
-  }
-  return values;
 }
 
 function unique(values) {
@@ -83,22 +72,23 @@ function resourceBins() {
 }
 
 function windowsAppDataEnvFiles() {
-  return windowsUserProfiles().map((profile) =>
-    path.join(profile, "AppData", "Roaming", "OpenWhispr-development", ".env"),
-  );
+  return windowsUserProfiles().flatMap((profile) => [
+    {
+      label: "installed",
+      path: path.join(profile, "AppData", "Roaming", "open-whispr", ".env"),
+    },
+    {
+      label: "development",
+      path: path.join(profile, "AppData", "Roaming", "OpenWhispr-development", ".env"),
+    },
+  ]);
 }
 
 function currentMode() {
-  const envFile = findFirst([path.join(rootDir, ".env"), ...windowsAppDataEnvFiles()]);
-  const env = { ...process.env, ...parseEnvFile(envFile) };
-  return {
-    envFile,
-    dictationKey: env.DICTATION_KEY || null,
-    activationMode: env.ACTIVATION_MODE || null,
-    lightModeEnabled: env.LIGHT_MODE_ENABLED !== "false",
-    localTranscriptionProvider: env.LOCAL_TRANSCRIPTION_PROVIDER || null,
-    parakeetModel: env.PARAKEET_MODEL || null,
-  };
+  return buildModeReport({
+    envFiles: [{ label: "repo", path: path.join(rootDir, ".env") }, ...windowsAppDataEnvFiles()],
+    preferredLocalProvider: "nvidia",
+  });
 }
 
 function runPowerShell(command) {
@@ -223,6 +213,9 @@ function main() {
   if (!ffmpeg.available) blockers.push("FFmpeg missing");
   if (!whisper.binary) blockers.push("Whisper server binary missing");
   if (!whisper.baseModel) blockers.push("Whisper base model missing");
+  if (mode.providerDrift?.detected && parakeet.modelReady) {
+    blockers.push(mode.providerDrift.message);
+  }
   if (hotkey.running && !hotkey.listeningForExpectedKey) {
     blockers.push("Windows hotkey listener is running but not listening for F6");
   }

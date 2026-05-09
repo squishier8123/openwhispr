@@ -1534,6 +1534,34 @@ export async function initializeSettings(): Promise<void> {
       );
     }
 
+    try {
+      const startupTranscriptionPrefs =
+        await window.electronAPI.getStartupTranscriptionPreferences?.();
+      if (startupTranscriptionPrefs) {
+        localStorage.setItem(
+          "useLocalWhisper",
+          String(startupTranscriptionPrefs.useLocalWhisper)
+        );
+        localStorage.setItem(
+          "localTranscriptionProvider",
+          startupTranscriptionPrefs.localTranscriptionProvider
+        );
+        if (startupTranscriptionPrefs.parakeetModel) {
+          localStorage.setItem("parakeetModel", startupTranscriptionPrefs.parakeetModel);
+        }
+        if (startupTranscriptionPrefs.whisperModel) {
+          localStorage.setItem("whisperModel", startupTranscriptionPrefs.whisperModel);
+        }
+        useSettingsStore.setState(startupTranscriptionPrefs);
+      }
+    } catch (err) {
+      logger.warn(
+        "Failed to sync startup transcription preferences",
+        { error: (err as Error).message },
+        "settings"
+      );
+    }
+
     // Sync dictation key from main process.
     // localStorage holds the user's preferred hotkey. Only populate from .env
     // when localStorage is empty (fresh install / cleared data).

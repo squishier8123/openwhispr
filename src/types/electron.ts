@@ -578,6 +578,12 @@ declare global {
       saveUiLanguage: (language: string) => Promise<{ success: boolean; language: string }>;
       setUiLanguage: (language: string) => Promise<{ success: boolean; language: string }>;
       saveAllKeysToEnv: () => Promise<{ success: boolean; path: string }>;
+      getStartupTranscriptionPreferences: () => Promise<{
+        useLocalWhisper: boolean;
+        localTranscriptionProvider: LocalTranscriptionProvider;
+        whisperModel?: string;
+        parakeetModel?: string;
+      } | null>;
       syncStartupPreferences: (prefs: {
         useLocalWhisper: boolean;
         localTranscriptionProvider: LocalTranscriptionProvider;

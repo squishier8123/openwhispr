@@ -11,6 +11,7 @@ const {
 } = require("./downloadUtils");
 const WhisperServerManager = require("./whisperServer");
 const { getModelsDirForService } = require("./modelDirUtils");
+const { transcribeWithSidecarRecovery } = require("./localSidecarRecovery");
 
 const modelRegistryData = require("../models/modelRegistryData.json");
 
@@ -303,7 +304,24 @@ class WhisperManager {
     });
 
     const startTime = Date.now();
-    const result = await this.serverManager.transcribe(audioBuffer, { language, initialPrompt });
+    const result = await transcribeWithSidecarRecovery({
+      label: "whisper-server",
+      transcribe: () => this.serverManager.transcribe(audioBuffer, { language, initialPrompt }),
+      restart: async () => {
+        debugLogger.warn("Restarting whisper-server after retryable transcription failure", {
+          model,
+        });
+        await this.serverManager.stop();
+        await this.serverManager.start(modelPath, { useCuda: this.serverManager.useCuda });
+        this.currentServerModel = model;
+      },
+      onRetry: (error) => {
+        debugLogger.warn("Retrying whisper transcription after sidecar failure", {
+          error: error.message,
+          model,
+        });
+      },
+    });
     const elapsed = Date.now() - startTime;
 
     debugLogger.logWhisperPipeline("transcribeViaServer - completed", {

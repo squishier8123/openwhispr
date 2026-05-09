@@ -11,6 +11,7 @@ const {
 } = require("./ffmpegUtils");
 const { getSafeTempDir } = require("./safeTempDir");
 const ParakeetWsServer = require("./parakeetWsServer");
+const { transcribeWithSidecarRecovery } = require("./localSidecarRecovery");
 
 const SAMPLE_RATE = 16000;
 const BYTES_PER_SAMPLE = 4; // float32
@@ -186,7 +187,10 @@ class ParakeetServerManager {
       }
 
       if (samples.length <= MAX_SEGMENT_BYTES) {
-        const result = await this.wsServer.transcribe(samples, SAMPLE_RATE);
+        const result = await this._transcribeSamplesWithRecovery(samples, SAMPLE_RATE, {
+          modelName,
+          modelDir,
+        });
         if (!result.text?.trim()) {
           debugLogger.warn("Parakeet returned empty text for non-silent audio", {
             durationSeconds,
@@ -208,7 +212,10 @@ class ParakeetServerManager {
       for (let offset = 0; offset < samples.length; offset += MAX_SEGMENT_BYTES) {
         const end = Math.min(offset + MAX_SEGMENT_BYTES, samples.length);
         const segment = samples.subarray(offset, end);
-        const result = await this.wsServer.transcribe(segment, SAMPLE_RATE);
+        const result = await this._transcribeSamplesWithRecovery(segment, SAMPLE_RATE, {
+          modelName,
+          modelDir,
+        });
         totalElapsed += result.elapsed || 0;
         if (result.text) {
           texts.push(result.text);
@@ -239,6 +246,27 @@ class ParakeetServerManager {
         });
       }
     }
+  }
+
+  async _transcribeSamplesWithRecovery(samples, sampleRate, options) {
+    const { modelName, modelDir } = options;
+    return transcribeWithSidecarRecovery({
+      label: "parakeet-ws",
+      transcribe: () => this.wsServer.transcribe(samples, sampleRate),
+      restart: async () => {
+        debugLogger.warn("Restarting parakeet WS server after retryable transcription failure", {
+          modelName,
+        });
+        await this.wsServer.stop();
+        await this.wsServer.start(modelName, modelDir);
+      },
+      onRetry: (error) => {
+        debugLogger.warn("Retrying Parakeet transcription after sidecar failure", {
+          error: error.message,
+          modelName,
+        });
+      },
+    });
   }
 
   async startServer(modelName) {

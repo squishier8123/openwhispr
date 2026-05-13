@@ -16,7 +16,11 @@ function resolveStartupTranscriptionPrefs(env = process.env) {
     };
   }
 
-  return null;
+  return {
+    useLocalWhisper: true,
+    localTranscriptionProvider: "nvidia",
+    parakeetModel: env.PARAKEET_MODEL || "parakeet-unified-en-0.6b",
+  };
 }
 
 module.exports = {

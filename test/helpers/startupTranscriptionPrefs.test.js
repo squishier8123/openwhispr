@@ -18,6 +18,10 @@ test("uses Parakeet startup preference when env selects the local nvidia provide
   });
 });
 
-test("does not force local mode when env has no local provider", () => {
-  assert.equal(resolveStartupTranscriptionPrefs({}), null);
+test("defaults fresh installs to local Parakeet dictation", () => {
+  assert.deepEqual(resolveStartupTranscriptionPrefs({}), {
+    useLocalWhisper: true,
+    localTranscriptionProvider: "nvidia",
+    parakeetModel: "parakeet-unified-en-0.6b",
+  });
 });

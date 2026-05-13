@@ -859,6 +859,16 @@ async function startApp() {
     }
   });
 
+  const parakeetSettings = {
+    localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
+    parakeetModel: process.env.PARAKEET_MODEL,
+  };
+  if (parakeetSettings.localTranscriptionProvider === "nvidia") {
+    parakeetManager.initializeAtStartup(parakeetSettings).catch((err) => {
+      debugLogger.debug("Parakeet startup init error (non-fatal)", { error: err.message });
+    });
+  }
+
   // Non-blocking server pre-warming
   if (!isLightModeEnabled()) {
     const whisperSettings = {
@@ -868,14 +878,6 @@ async function startApp() {
     };
     whisperManager.initializeAtStartup(whisperSettings).catch((err) => {
       debugLogger.debug("Whisper startup init error (non-fatal)", { error: err.message });
-    });
-
-    const parakeetSettings = {
-      localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
-      parakeetModel: process.env.PARAKEET_MODEL,
-    };
-    parakeetManager.initializeAtStartup(parakeetSettings).catch((err) => {
-      debugLogger.debug("Parakeet startup init error (non-fatal)", { error: err.message });
     });
 
     // TODO: drop legacy REASONING_PROVIDER / LOCAL_REASONING_MODEL fallbacks after 2 releases.
@@ -901,7 +903,7 @@ async function startApp() {
       });
     }
   } else {
-    debugLogger.info("Light Mode enabled; skipping local AI startup pre-warm");
+    debugLogger.info("Light Mode enabled; skipping non-dictation local AI startup pre-warm");
   }
 
   // Auto-download diarization models if binary is available

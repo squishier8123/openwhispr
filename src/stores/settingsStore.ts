@@ -626,16 +626,16 @@ function invalidateApiKeyCaches(
 
 export const useSettingsStore = create<SettingsState>()((set, get) => ({
   uiLanguage: normalizeUiLanguage(isBrowser ? localStorage.getItem("uiLanguage") : null),
-  useLocalWhisper: forceLocalParakeetForDev || readBoolean("useLocalWhisper", false),
+  useLocalWhisper: forceLocalParakeetForDev || readBoolean("useLocalWhisper", true),
   whisperModel: readString("whisperModel", "base"),
   localTranscriptionProvider: (forceLocalParakeetForDev
     ? "nvidia"
-    : readString("localTranscriptionProvider", "whisper") === "nvidia"
+    : readString("localTranscriptionProvider", "nvidia") === "nvidia"
       ? "nvidia"
       : "whisper") as LocalTranscriptionProvider,
   parakeetModel: forceLocalParakeetForDev
     ? "parakeet-unified-en-0.6b"
-    : readString("parakeetModel", ""),
+    : readString("parakeetModel", "parakeet-unified-en-0.6b"),
   allowOpenAIFallback: readBoolean("allowOpenAIFallback", false),
   allowLocalFallback: readBoolean("allowLocalFallback", true),
   fallbackWhisperModel: readString("fallbackWhisperModel", "base"),
@@ -654,8 +654,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   customDictionary: readStringArray("customDictionary", []),
   assemblyAiStreaming: readBoolean("assemblyAiStreaming", true),
 
-  useCleanupModel: readBoolean("useCleanupModel", true),
-  useDictationAgent: readBoolean("useDictationAgent", true),
+  useCleanupModel: readBoolean("useCleanupModel", false),
+  useDictationAgent: readBoolean("useDictationAgent", false),
   cleanupModel: readString("cleanupModel", ""),
   cleanupProvider: readString("cleanupProvider", "openai"),
 
@@ -747,9 +747,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   transcriptionMode: (() => {
     if (forceLocalParakeetForDev) return "local" as InferenceMode;
-    const v = readString("transcriptionMode", "openwhispr");
+    const v = readString("transcriptionMode", "local");
     if (v === "openwhispr" || v === "providers" || v === "local" || v === "self-hosted") return v;
-    return "openwhispr" as InferenceMode;
+    return "local" as InferenceMode;
   })(),
   remoteTranscriptionType: (() => {
     const v = readString("remoteTranscriptionType", "lan");

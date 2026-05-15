@@ -359,7 +359,15 @@ declare global {
           restoreClipboard?: boolean;
           allowClipboardFallback?: boolean;
         }
-      ) => Promise<void>;
+      ) => Promise<{
+        success: boolean;
+        pasted: boolean;
+        copiedToClipboard: boolean;
+        manualPasteRequired: boolean;
+        platform: string;
+        method: string;
+        error?: string;
+      }>;
       hideWindow: () => Promise<void>;
       showDictationPanel: () => Promise<void>;
       onToggleDictation: (callback: () => void) => () => void;

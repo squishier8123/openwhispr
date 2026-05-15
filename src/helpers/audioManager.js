@@ -678,7 +678,11 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (useLocalWhisper) {
         if (localProvider === "nvidia") {
           activeModel = parakeetModel;
-          result = await this.processWithLocalParakeet(audioBlob, parakeetModel, metadata);
+          result = await this.processWithLocalParakeet(audioBlob, parakeetModel, {
+            ...metadata,
+            audioReadiness,
+            speechGateDecision,
+          });
         } else {
           activeModel = whisperModel;
           result = await this.processWithLocalWhisper(audioBlob, whisperModel, metadata);
@@ -837,33 +841,6 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       }
 
       const settings = getSettings();
-
-      if (shouldFallbackFromParakeet(settings, error)) {
-        const fallbackModel = settings.fallbackWhisperModel || settings.whisperModel || "base";
-        try {
-          logger.warn(
-            "Parakeet failed; falling back to local Whisper",
-            { error: error.message, fallbackModel },
-            "transcription"
-          );
-          const fallbackResult = await this.processWithLocalWhisper(
-            audioBlob,
-            fallbackModel,
-            metadata
-          );
-          return {
-            ...fallbackResult,
-            source: "local-whisper-fallback",
-            fallbackFrom: "local-parakeet",
-            fallbackReason: error.message,
-          };
-        } catch (fallbackError) {
-          throw new Error(
-            `Parakeet failed: ${error.message}. Local Whisper fallback also failed: ${fallbackError.message}`
-          );
-        }
-      }
-
       const { allowOpenAIFallback, useLocalWhisper: isLocalMode } = settings;
 
       if (allowOpenAIFallback && isLocalMode) {
@@ -940,11 +917,44 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         throw new Error(result.message || result.error || "Parakeet transcription failed");
       }
     } catch (error) {
+      const settings = getSettings();
+
+      if (shouldFallbackFromParakeet(settings, error, metadata)) {
+        const fallbackModel = settings.fallbackWhisperModel || settings.whisperModel || "base";
+        try {
+          logger.warn(
+            "Parakeet returned no text for usable audio; falling back to local Whisper",
+            {
+              error: error.message,
+              fallbackModel,
+              audioReady: metadata.audioReadiness?.ready === true,
+              speechGateReason: metadata.speechGateDecision?.reason || null,
+            },
+            "transcription"
+          );
+          const fallbackResult = await this.processWithLocalWhisper(
+            audioBlob,
+            fallbackModel,
+            metadata
+          );
+          return {
+            ...fallbackResult,
+            source: "local-whisper-fallback",
+            fallbackFrom: "local-parakeet",
+            fallbackReason: error.message,
+          };
+        } catch (fallbackError) {
+          throw new Error(
+            `Parakeet failed: ${error.message}. Local Whisper fallback also failed: ${fallbackError.message}`
+          );
+        }
+      }
+
       if (error.message === "No audio detected") {
         throw error;
       }
 
-      const { allowOpenAIFallback, useLocalWhisper: isLocalMode } = getSettings();
+      const { allowOpenAIFallback, useLocalWhisper: isLocalMode } = settings;
 
       if (allowOpenAIFallback && isLocalMode) {
         try {
@@ -2045,7 +2055,13 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
   async safePaste(text, options = {}) {
     try {
-      await window.electronAPI.pasteText(text, options);
+      const result = await window.electronAPI.pasteText(text, options);
+      if (result?.manualPasteRequired) {
+        this.onError?.({
+          title: "Manual Paste Required",
+          description: "Auto-paste did not reach the target app. The text is copied to your clipboard.",
+        });
+      }
       return true;
     } catch (error) {
       const message =

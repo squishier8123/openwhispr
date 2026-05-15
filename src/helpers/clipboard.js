@@ -586,6 +586,7 @@ class ClipboardManager {
     let method = "unknown";
     const webContents = options.webContents;
     const allowClipboardFallback = options.allowClipboardFallback === true;
+    let copiedToClipboard = false;
 
     try {
       const shouldRestore = options.restoreClipboard !== false;
@@ -599,6 +600,7 @@ class ClipboardManager {
       } else {
         clipboard.writeText(text);
       }
+      copiedToClipboard = true;
       this.safeLog("📋 Text copied to clipboard:", text.substring(0, 50) + "...");
 
       if (platform === "darwin") {
@@ -610,7 +612,14 @@ class ClipboardManager {
           this.safeLog("⚠️ No accessibility permissions - text copied to clipboard only");
           if (allowClipboardFallback) {
             this.safeLog("✅ Clipboard fallback used (manual paste required)");
-            return;
+            return {
+              success: true,
+              pasted: false,
+              copiedToClipboard: true,
+              manualPasteRequired: true,
+              platform,
+              method: "clipboard",
+            };
           }
           const errorMsg =
             "Accessibility permissions required for automatic pasting. Text has been copied to clipboard - please paste manually with Cmd+V.";
@@ -645,7 +654,32 @@ class ClipboardManager {
         elapsedMs: Date.now() - startTime,
         textLength: text.length,
       });
+      return {
+        success: true,
+        pasted: true,
+        copiedToClipboard,
+        manualPasteRequired: false,
+        platform,
+        method,
+      };
     } catch (error) {
+      if (allowClipboardFallback && copiedToClipboard) {
+        this.safeLog("⚠️ Paste failed; keeping text on clipboard for manual paste", {
+          platform,
+          method,
+          elapsedMs: Date.now() - startTime,
+          error: error.message,
+        });
+        return {
+          success: true,
+          pasted: false,
+          copiedToClipboard: true,
+          manualPasteRequired: true,
+          platform,
+          method: "clipboard",
+          error: error.message,
+        };
+      }
       this.safeLog("❌ Paste operation failed", {
         platform,
         method,

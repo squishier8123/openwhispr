@@ -21,7 +21,7 @@ export function getDictationAudioReadiness(audioBlob, metadata = {}) {
   return { ready: true, reason: "ready", size, durationMs };
 }
 
-export function shouldFallbackFromParakeet(settings, error) {
+export function shouldFallbackFromParakeet(settings, error, context = {}) {
   if (!settings?.useLocalWhisper || settings.localTranscriptionProvider !== "nvidia") {
     return false;
   }
@@ -30,5 +30,11 @@ export function shouldFallbackFromParakeet(settings, error) {
   }
 
   const message = error?.message || "";
-  return !/No audio detected/i.test(message);
+  if (!/No audio detected/i.test(message)) {
+    return true;
+  }
+
+  const audioReady = context.audioReadiness?.ready === true;
+  const speechGateReason = context.speechGateDecision?.reason || null;
+  return audioReady && speechGateReason !== "silence";
 }

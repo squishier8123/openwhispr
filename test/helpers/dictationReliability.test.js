@@ -45,7 +45,7 @@ test("allows normal dictation audio through", async () => {
   });
 });
 
-test("falls back from Parakeet only for local nvidia mode with fallback enabled", async () => {
+test("falls back from Parakeet for retryable local nvidia failures", async () => {
   const { shouldFallbackFromParakeet } = await import(
     "../../src/helpers/dictationReliability.js"
   );
@@ -69,7 +69,55 @@ test("falls back from Parakeet only for local nvidia mode with fallback enabled"
         localTranscriptionProvider: "nvidia",
         allowLocalFallback: true,
       },
+      new Error("No audio detected"),
+      {
+        audioReadiness: { ready: true },
+        speechGateDecision: { skip: true, reason: "insufficient_speech" },
+      }
+    ),
+    true
+  );
+
+  assert.equal(
+    shouldFallbackFromParakeet(
+      {
+        useLocalWhisper: true,
+        localTranscriptionProvider: "nvidia",
+        allowLocalFallback: true,
+      },
       new Error("No audio detected")
+    ),
+    false
+  );
+
+  assert.equal(
+    shouldFallbackFromParakeet(
+      {
+        useLocalWhisper: true,
+        localTranscriptionProvider: "nvidia",
+        allowLocalFallback: true,
+      },
+      new Error("No audio detected"),
+      {
+        audioReadiness: { ready: true },
+        speechGateDecision: { skip: false, reason: "speech_detected" },
+      }
+    ),
+    true
+  );
+
+  assert.equal(
+    shouldFallbackFromParakeet(
+      {
+        useLocalWhisper: true,
+        localTranscriptionProvider: "nvidia",
+        allowLocalFallback: true,
+      },
+      new Error("No audio detected"),
+      {
+        audioReadiness: { ready: true },
+        speechGateDecision: { skip: true, reason: "silence" },
+      }
     ),
     false
   );

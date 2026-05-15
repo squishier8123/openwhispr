@@ -10,6 +10,11 @@ import {
   getLocalSpeechGateDecision,
   recordLocalSpeechWindow,
 } from "./localSpeechGate";
+import {
+  createDictationLatencyTrace,
+  getDictationLatencyTraceSnapshot,
+  markDictationLatencyTrace,
+} from "./dictationLatencyTrace";
 import { getSettings, getEffectiveCleanupModel, isCloudCleanupMode } from "../stores/settingsStore";
 import { detectAgentName } from "../config/agentDetection";
 import { resolvePrompt } from "../config/prompts";
@@ -148,6 +153,7 @@ class AudioManager {
     this.lastAudioBlob = null;
     this.lastAudioMetadata = null;
     this._localSpeechGateState = null;
+    this._latencyTrace = null;
   }
 
   getWorkletBlobUrl() {
@@ -321,8 +327,13 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         return false;
       }
 
+      this._latencyTrace = createDictationLatencyTrace("batch-recording");
+      markDictationLatencyTrace(this._latencyTrace, "start-request");
+
       const constraints = await this.getAudioConstraints();
+      markDictationLatencyTrace(this._latencyTrace, "constraints-ready");
       const micStream = await navigator.mediaDevices.getUserMedia(constraints);
+      markDictationLatencyTrace(this._latencyTrace, "microphone-opened");
 
       const audioTrack = micStream.getAudioTracks()[0];
       if (audioTrack) {
@@ -414,6 +425,12 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       this.mediaRecorder.start();
       this.isRecording = true;
       this.onStateChange?.({ isRecording: true, isProcessing: false });
+      markDictationLatencyTrace(this._latencyTrace, "recording-started");
+      logger.info(
+        "Dictation latency trace",
+        getDictationLatencyTraceSnapshot(this._latencyTrace, "recording"),
+        "performance"
+      );
 
       const {
         showTranscriptionPreview,
@@ -447,6 +464,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
       return true;
     } catch (error) {
+      logger.warn(
+        "Dictation latency trace failed before recording",
+        getDictationLatencyTraceSnapshot(this._latencyTrace, "start-failed", {
+          error: error.message,
+        }),
+        "performance"
+      );
+      this._latencyTrace = null;
       let errorTitle = "Recording Error";
       let errorDescription = `Failed to access microphone: ${error.message}`;
 
@@ -473,6 +498,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
   stopRecording() {
     if (this.mediaRecorder?.state === "recording") {
+      markDictationLatencyTrace(this._latencyTrace, "stop-requested");
       this.mediaRecorder.stop();
       return true;
     }
@@ -515,6 +541,13 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const settings = getSettings();
     const speechGateDecision = getLocalSpeechGateDecision(this._localSpeechGateState);
     this._localSpeechGateState = null;
+    const latencyTrace = this._latencyTrace;
+    markDictationLatencyTrace(latencyTrace, "process-audio-start", {
+      audioSizeBytes: audioBlob.size,
+      audioDurationMs: metadata.durationSeconds
+        ? Math.round(metadata.durationSeconds * 1000)
+        : null,
+    });
 
     const shouldUseStrongLocalWhisperGate =
       settings.useLocalWhisper && settings.localTranscriptionProvider === "whisper";
@@ -535,6 +568,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         },
         "audio"
       );
+      logger.info(
+        "Dictation latency trace",
+        getDictationLatencyTraceSnapshot(latencyTrace, "speech-gate-skipped", {
+          speechGateReason: speechGateDecision.reason,
+        }),
+        "performance"
+      );
+      this._latencyTrace = null;
       this.isProcessing = false;
       this.onStateChange?.({ isRecording: false, isProcessing: false });
       this.onTranscriptionComplete?.({ success: true, text: "" });
@@ -563,9 +604,17 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (useLocalWhisper) {
         if (localProvider === "nvidia") {
           activeModel = parakeetModel;
+          markDictationLatencyTrace(latencyTrace, "transcription-start", {
+            provider: "local-parakeet",
+            model: activeModel,
+          });
           result = await this.processWithLocalParakeet(audioBlob, parakeetModel, metadata);
         } else {
           activeModel = whisperModel;
+          markDictationLatencyTrace(latencyTrace, "transcription-start", {
+            provider: "local-whisper",
+            model: activeModel,
+          });
           result = await this.processWithLocalWhisper(audioBlob, whisperModel, metadata);
         }
       } else if (isOpenWhisprCloudMode) {
@@ -578,9 +627,17 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           throw err;
         }
         activeModel = "openwhispr-cloud";
+        markDictationLatencyTrace(latencyTrace, "transcription-start", {
+          provider: "openwhispr-cloud",
+          model: activeModel,
+        });
         result = await this.processWithOpenWhisprCloud(audioBlob, metadata);
       } else {
         activeModel = this.getTranscriptionModel();
+        markDictationLatencyTrace(latencyTrace, "transcription-start", {
+          provider: "openai",
+          model: activeModel,
+        });
         result = await this.processWithOpenAIAPI(audioBlob, metadata);
       }
 
@@ -595,6 +652,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         provider: result?.source || (useLocalWhisper ? localProvider : "cloud"),
         model: activeModel || null,
       };
+
+      markDictationLatencyTrace(latencyTrace, "transcription-complete", {
+        provider: result?.source || (useLocalWhisper ? localProvider : "cloud"),
+        model: activeModel || null,
+        textLength: result?.text?.length || 0,
+      });
+      if (result) {
+        result.latencyTraceId = latencyTrace?.id || null;
+      }
 
       this.onTranscriptionComplete?.(result);
 
@@ -624,8 +690,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         result?.timings?.transcriptionProcessingDurationMs ?? null;
 
       logger.info("Pipeline timing", timingData, "performance");
+      logger.info(
+        "Dictation latency trace",
+        getDictationLatencyTraceSnapshot(latencyTrace, "transcription-complete", timingData),
+        "performance"
+      );
     } catch (error) {
       const errorAtMs = Math.round(performance.now() - pipelineStart);
+      markDictationLatencyTrace(latencyTrace, "pipeline-failed", { error: error.message });
 
       logger.error(
         "Pipeline failed",
@@ -633,6 +705,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           errorAtMs,
           error: error.message,
         },
+        "performance"
+      );
+      logger.error(
+        "Dictation latency trace",
+        getDictationLatencyTraceSnapshot(latencyTrace, "failed", {
+          error: error.message,
+          errorAtMs,
+        }),
         "performance"
       );
 
@@ -650,6 +730,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         }
       }
     } finally {
+      this._latencyTrace = null;
       if (this.isProcessing) {
         this.isProcessing = false;
         this.onStateChange?.({ isRecording: false, isProcessing: false });
@@ -703,8 +784,13 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (result.success && result.text) {
         const rawText = result.text;
         const reasoningStart = performance.now();
+        markDictationLatencyTrace(this._latencyTrace, "reasoning-start", { source: "local" });
         const text = await this.processTranscription(result.text, "local");
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
+        markDictationLatencyTrace(this._latencyTrace, "reasoning-complete", {
+          source: "local",
+          reasoningProcessingDurationMs: timings.reasoningProcessingDurationMs,
+        });
 
         if (text !== null && text !== undefined) {
           return { success: true, text: text || result.text, rawText, source: "local", timings };
@@ -777,8 +863,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (result.success && result.text) {
         const rawText = result.text;
         const reasoningStart = performance.now();
+        markDictationLatencyTrace(this._latencyTrace, "reasoning-start", {
+          source: "local-parakeet",
+        });
         const text = await this.processTranscription(result.text, "local-parakeet");
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
+        markDictationLatencyTrace(this._latencyTrace, "reasoning-complete", {
+          source: "local-parakeet",
+          reasoningProcessingDurationMs: timings.reasoningProcessingDurationMs,
+        });
 
         if (text !== null && text !== undefined) {
           return {

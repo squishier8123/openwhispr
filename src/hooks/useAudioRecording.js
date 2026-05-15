@@ -148,6 +148,7 @@ export const useAudioRecording = (toast, options = {}) => {
             logger.info(
               "Paste timing",
               {
+                traceId: result.latencyTraceId || null,
                 pasteMs: Math.round(performance.now() - pasteStart),
                 source: result.source,
                 textLength: result.text.length,

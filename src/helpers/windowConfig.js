@@ -45,6 +45,8 @@ const MAIN_WINDOW_CONFIG = {
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
+    // F6 must reach the recorder immediately even when the floating panel was hidden.
+    backgroundThrottling: false,
   },
   frame: false,
   alwaysOnTop: true,

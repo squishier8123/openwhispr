@@ -122,3 +122,33 @@ test("falls back from Parakeet for retryable local nvidia failures", async () =>
     false
   );
 });
+
+test("retries blank local transcription with normalized audio only when capture evidence is usable", async () => {
+  const { shouldRetryNormalizedNoAudio } = await import(
+    "../../src/helpers/dictationReliability.js"
+  );
+
+  assert.equal(
+    shouldRetryNormalizedNoAudio(
+      { success: false, message: "No audio detected" },
+      {
+        audioReadiness: { ready: true },
+        speechGateDecision: { skip: true, reason: "insufficient_speech" },
+      }
+    ),
+    true
+  );
+
+  assert.equal(
+    shouldRetryNormalizedNoAudio(
+      { success: false, message: "No audio detected" },
+      {
+        audioReadiness: { ready: true },
+        speechGateDecision: { skip: true, reason: "silence" },
+      }
+    ),
+    false
+  );
+
+  assert.equal(shouldRetryNormalizedNoAudio({ success: true, text: "hello" }), false);
+});

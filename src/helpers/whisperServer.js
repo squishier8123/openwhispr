@@ -16,6 +16,7 @@ const PORT_RANGE_END = 8199;
 const STARTUP_TIMEOUT_MS = 30000;
 const HEALTH_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
+const NORMALIZED_AUDIO_FILTERS = "highpass=f=100,lowpass=f=8000,dynaudnorm=f=75:g=15:p=0.95:m=15";
 
 class WhisperServerManager extends EventEmitter {
   constructor() {
@@ -475,7 +476,9 @@ class WhisperServerManager extends EventEmitter {
     if (!this.canConvert) {
       throw new Error("FFmpeg not found - required for audio conversion");
     }
-    finalBuffer = await this._convertToWav(audioBuffer);
+    finalBuffer = await this._convertToWav(audioBuffer, {
+      normalizeAudio: options.normalizeAudio === true,
+    });
 
     const boundary = `----WhisperBoundary${Date.now()}`;
     const parts = [];
@@ -571,7 +574,7 @@ class WhisperServerManager extends EventEmitter {
     });
   }
 
-  async _convertToWav(audioBuffer) {
+  async _convertToWav(audioBuffer, options = {}) {
     const tempDir = getSafeTempDir();
     const timestamp = Date.now();
     const tempInputPath = path.join(tempDir, `whisper-input-${timestamp}.webm`);
@@ -579,7 +582,11 @@ class WhisperServerManager extends EventEmitter {
 
     try {
       fs.writeFileSync(tempInputPath, audioBuffer);
-      await convertToWav(tempInputPath, tempWavPath, { sampleRate: 16000, channels: 1 });
+      await convertToWav(tempInputPath, tempWavPath, {
+        sampleRate: 16000,
+        channels: 1,
+        audioFilters: options.normalizeAudio ? NORMALIZED_AUDIO_FILTERS : null,
+      });
       return fs.readFileSync(tempWavPath);
     } finally {
       for (const f of [tempInputPath, tempWavPath]) {

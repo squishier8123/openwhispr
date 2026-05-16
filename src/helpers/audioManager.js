@@ -12,6 +12,7 @@ import {
 } from "./localSpeechGate";
 import {
   getDictationAudioReadiness,
+  shouldRetryNormalizedNoAudio,
   shouldFallbackFromParakeet,
 } from "./dictationReliability";
 import { getSettings, getEffectiveCleanupModel, isCloudCleanupMode } from "../stores/settingsStore";
@@ -794,6 +795,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (dictionaryPrompt) {
         options.initialPrompt = dictionaryPrompt;
       }
+      options.retryNormalizedNoAudio = shouldRetryNormalizedNoAudio(
+        { success: false, message: "No audio detected" },
+        metadata
+      );
 
       logger.debug(
         "Local transcription starting",

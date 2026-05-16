@@ -38,3 +38,13 @@ export function shouldFallbackFromParakeet(settings, error, context = {}) {
   const speechGateReason = context.speechGateDecision?.reason || null;
   return audioReady && speechGateReason !== "silence";
 }
+
+export function shouldRetryNormalizedNoAudio(result, context = {}) {
+  if (result?.success !== false || !/No audio detected/i.test(result?.message || "")) {
+    return false;
+  }
+
+  const audioReady = context.audioReadiness?.ready === true;
+  const speechGateReason = context.speechGateDecision?.reason || null;
+  return audioReady && speechGateReason !== "silence";
+}

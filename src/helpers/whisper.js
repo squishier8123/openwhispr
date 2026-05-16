@@ -254,6 +254,7 @@ class WhisperManager {
     const model = options.model || "base";
     const language = options.language || null;
     const initialPrompt = options.initialPrompt || null;
+    const retryNormalizedNoAudio = options.retryNormalizedNoAudio === true;
     const modelPath = this.getModelPath(model);
 
     // Check if model exists
@@ -261,10 +262,12 @@ class WhisperManager {
       throw new Error(`Whisper model "${model}" not downloaded. Please download it from Settings.`);
     }
 
-    return await this.transcribeViaServer(audioBlob, model, language, initialPrompt);
+    return await this.transcribeViaServer(audioBlob, model, language, initialPrompt, {
+      retryNormalizedNoAudio,
+    });
   }
 
-  async transcribeViaServer(audioBlob, model, language, initialPrompt = null) {
+  async transcribeViaServer(audioBlob, model, language, initialPrompt = null, options = {}) {
     debugLogger.info("Transcription mode: SERVER", { model, language: language || "auto" });
     const modelPath = this.getModelPath(model);
 
@@ -311,7 +314,30 @@ class WhisperManager {
       resultKeys: Object.keys(result),
     });
 
-    return this.parseWhisperResult(result);
+    const parsed = this.parseWhisperResult(result);
+    if (
+      parsed.success === false &&
+      parsed.message === "No audio detected" &&
+      options.retryNormalizedNoAudio
+    ) {
+      debugLogger.warn("Retrying Whisper with normalized audio after blank result", {
+        elapsed,
+        model,
+      });
+      const retryStartTime = Date.now();
+      const retryResult = await this.serverManager.transcribe(audioBuffer, {
+        language,
+        initialPrompt,
+        normalizeAudio: true,
+      });
+      debugLogger.logWhisperPipeline("transcribeViaServer - normalized retry completed", {
+        elapsed: Date.now() - retryStartTime,
+        resultKeys: Object.keys(retryResult),
+      });
+      return this.parseWhisperResult(retryResult);
+    }
+
+    return parsed;
   }
 
   async transcribeViaLan(audioBlob, url, options = {}) {

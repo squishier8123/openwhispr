@@ -21,6 +21,7 @@ export function scoreDictationMicLabel(label) {
 
   let score = 0;
 
+  if (includesAny(normalized, ["nexigo", "n60 fhd webcam audio"])) score += 260;
   if (includesAny(normalized, ["arctis", "steelseries", "nova"])) score += 160;
   if (includesAny(normalized, ["razer", "headset", "headphones"])) score += 110;
   if (includesAny(normalized, ["yeti", "shure", "rode", "elgato", "wave"])) score += 100;
@@ -28,7 +29,9 @@ export function scoreDictationMicLabel(label) {
   if (includesAny(normalized, ["wireless", "bluetooth"])) score += 20;
   if (includesAny(normalized, ["microphone", "mic"])) score += 5;
 
-  if (includesAny(normalized, ["webcam", "camera", "nexigo"])) score -= 45;
+  if (includesAny(normalized, ["webcam", "camera"]) && !normalized.includes("nexigo")) {
+    score -= 45;
+  }
   if (includesAny(normalized, ["built-in", "internal", "integrated"])) score -= 10;
 
   return score;

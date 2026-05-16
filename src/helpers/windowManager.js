@@ -439,8 +439,14 @@ class WindowManager {
       return;
     }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      const t0 = Date.now();
+      debugLogger.info("Toggle dictation requested", { atMs: t0 }, "hotkey");
       this.showDictationPanel();
-      debugLogger.info("Sending toggle-dictation to renderer", {}, "hotkey");
+      debugLogger.info(
+        "Sending toggle-dictation to renderer",
+        { elapsedMs: Date.now() - t0 },
+        "hotkey"
+      );
       this.mainWindow.webContents.send("toggle-dictation");
       this._isDictatingToggle = !this._isDictatingToggle;
       this.meetingDetectionEngine?.setUserRecording(this._isDictatingToggle);
@@ -1008,6 +1014,7 @@ class WindowManager {
   showDictationPanel(options = {}) {
     const { focus = false } = options;
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      const t0 = Date.now();
       const wasHidden = !this.mainWindow.isVisible() || this.mainWindow.isMinimized();
 
       if (wasHidden) {
@@ -1027,6 +1034,16 @@ class WindowManager {
       if (focus) {
         this.mainWindow.focus();
       }
+      debugLogger.info(
+        "showDictationPanel completed",
+        {
+          elapsedMs: Date.now() - t0,
+          wasHidden,
+          visible: this.mainWindow.isVisible(),
+          minimized: this.mainWindow.isMinimized(),
+        },
+        "hotkey"
+      );
     }
   }
 

@@ -17,6 +17,7 @@ const BYTES_PER_SAMPLE = 4; // float32
 const MAX_SEGMENT_SECONDS = 15;
 const MAX_SEGMENT_BYTES = MAX_SEGMENT_SECONDS * SAMPLE_RATE * BYTES_PER_SAMPLE;
 const SILENCE_RMS_THRESHOLD = 0.001;
+const DICTATION_AUDIO_FILTERS = "volume=3";
 
 class ParakeetServerManager {
   constructor() {
@@ -102,7 +103,11 @@ class ParakeetServerManager {
     });
 
     try {
-      await convertToWav(sourcePath, tempWavPath, { sampleRate: 16000, channels: 1 });
+      await convertToWav(sourcePath, tempWavPath, {
+        sampleRate: 16000,
+        channels: 1,
+        audioFilters: DICTATION_AUDIO_FILTERS,
+      });
     } catch (error) {
       throw this._formatConversionError(error);
     }

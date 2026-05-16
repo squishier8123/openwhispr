@@ -73,6 +73,7 @@ const isEnabled = () => getSettings().audioCuesEnabled;
 
 const playCue = async (notes) => {
   try {
+    if (window.electronAPI?.getPlatform?.() === "win32") return;
     if (!isEnabled()) return;
 
     const context = await resumeContextIfNeeded();

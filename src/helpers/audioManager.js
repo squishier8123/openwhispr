@@ -24,6 +24,7 @@ import { syncService } from "../services/SyncService.js";
 const REASONING_CACHE_TTL = 30000; // 30 seconds
 const REALTIME_MODELS = new Set(["gpt-4o-mini-transcribe", "gpt-4o-transcribe"]);
 const STANDBY_MIC_TTL_MS = 90 * 1000;
+const DICTATION_INPUT_GAIN = 3;
 
 function resolveReasoningRoute(text, settings, agentName) {
   const cleanupReachable =
@@ -440,6 +441,32 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         );
       }
 
+      let recordingStream = micStream;
+      let recordingGainContext = null;
+      try {
+        recordingGainContext = new AudioContext();
+        const sourceNode = recordingGainContext.createMediaStreamSource(micStream);
+        const gainNode = recordingGainContext.createGain();
+        const destinationNode = recordingGainContext.createMediaStreamDestination();
+        gainNode.gain.value = DICTATION_INPUT_GAIN;
+        sourceNode.connect(gainNode);
+        gainNode.connect(destinationNode);
+        recordingStream = destinationNode.stream;
+        logger.info(
+          "Dictation input gain enabled",
+          { gain: DICTATION_INPUT_GAIN },
+          "audio"
+        );
+      } catch (e) {
+        logger.warn(
+          "Dictation input gain setup failed, recording raw microphone stream",
+          { error: e.message },
+          "audio"
+        );
+        recordingGainContext = null;
+        recordingStream = micStream;
+      }
+
       try {
         this._silenceCtx = new AudioContext();
         this._silenceAnalyser = this._silenceCtx.createAnalyser();
@@ -466,7 +493,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         this._localSpeechGateState = null;
       }
 
-      this.mediaRecorder = new MediaRecorder(micStream);
+      this.mediaRecorder = new MediaRecorder(recordingStream);
       this.audioChunks = [];
       this.recordingStartTime = Date.now();
       this.recordingMimeType = this.mediaRecorder.mimeType || "audio/webm";
@@ -511,7 +538,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         this.recordingStartTime = null;
         await this.processAudio(audioBlob, { durationSeconds });
 
+        recordingStream.getTracks().forEach((track) => track.stop());
         micStream.getTracks().forEach((track) => track.stop());
+        recordingGainContext?.close().catch(() => {});
         void this.warmupMicrophoneDriver();
       };
 

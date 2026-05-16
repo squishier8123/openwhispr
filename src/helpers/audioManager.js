@@ -5,6 +5,7 @@ import { isBuiltInMicrophone } from "../utils/audioDeviceUtils";
 import { isSecureEndpoint } from "../utils/urlUtils";
 import { withSessionRefresh } from "../lib/auth";
 import { getBaseLanguageCode, validateLanguageForModel } from "../utils/languageSupport";
+import { selectPreferredDictationMic } from "./dictationMicSelection";
 import {
   createLocalSpeechGateState,
   getLocalSpeechGateDecision,
@@ -303,6 +304,26 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       return { audio: { deviceId: { exact: selectedDeviceId }, ...noProcessing } };
     }
 
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const preferredMic = selectPreferredDictationMic(devices);
+      if (preferredMic) {
+        this.cachedMicDeviceId = preferredMic.deviceId;
+        logger.info(
+          "Using preferred dictation microphone",
+          { deviceId: preferredMic.deviceId, label: preferredMic.label },
+          "audio"
+        );
+        return { audio: { deviceId: { exact: preferredMic.deviceId }, ...noProcessing } };
+      }
+    } catch (error) {
+      logger.debug(
+        "Failed to enumerate devices for preferred dictation mic detection",
+        { error: error.message },
+        "audio"
+      );
+    }
+
     logger.debug("Using default microphone", {}, "audio");
     return { audio: noProcessing };
   }
@@ -360,15 +381,22 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
   async cacheMicrophoneDeviceId() {
     if (this.cachedMicDeviceId) return; // Already cached
 
-    if (!getSettings().preferBuiltInMic) return; // Only needed for built-in mic detection
-
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const audioInputs = devices.filter((d) => d.kind === "audioinput");
+      const preferredMic = !getSettings().preferBuiltInMic
+        ? selectPreferredDictationMic(audioInputs)
+        : null;
       const builtInMic = audioInputs.find((d) => isBuiltInMicrophone(d.label));
-      if (builtInMic) {
-        this.cachedMicDeviceId = builtInMic.deviceId;
-        logger.debug("Microphone device ID pre-cached", { deviceId: builtInMic.deviceId }, "audio");
+      const cachedMic = preferredMic || (getSettings().preferBuiltInMic ? builtInMic : null);
+
+      if (cachedMic) {
+        this.cachedMicDeviceId = cachedMic.deviceId;
+        logger.debug(
+          "Microphone device ID pre-cached",
+          { deviceId: cachedMic.deviceId, label: cachedMic.label },
+          "audio"
+        );
       }
     } catch (error) {
       logger.debug("Failed to pre-cache microphone device ID", { error: error.message }, "audio");
